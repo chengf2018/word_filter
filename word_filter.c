@@ -21,23 +21,40 @@ inline init() {
 static inline trieptr create_trie() {
 	trieptr newtrie = (trieptr)malloc(sizeof(*newtrie));
 	memset(newtrie, 0, sizeof(*newtrie));
-	newtrie->capacity = 2;
-	newtrie->children = (trieptr)malloc(sizeof(*newtrie) * 2);
-	memset(newtrie->children, 0, sizeof(*newtrie) * 2);
+	newtrie->capacity = 1;
+	newtrie->children = (trieptr)malloc(sizeof(*newtrie));
+	memset(newtrie->children, 0, sizeof(*newtrie));
 	return newtrie;
 }
+static inline byte calcinitsize(byte addsize) {
+	for (int i = 1; i <= 8; i++) {
+		int size = (1 << i) - 1;
+		if (size >= addsize) return (byte)size;
+	}
+	return (byte)addsize;
+}
 
-static void reserve(trieptr node) {
+static void reserve(trieptr node, byte addsize) {
 	if (node->capacity == MAX_TRIE_SIZE) return;
+	addsize = addsize ? addsize : 1;
 	if (!node->children) {
-		node->capacity = 2;
-		node->children = (trieptr)malloc(sizeof(struct _trie) * node->nchildren);
-		memset(node->children, 0, sizeof(struct _trie) * node->nchildren);
+		node->capacity = calcinitsize(addsize);
+		node->children = (trieptr)malloc(sizeof(*node->children) * node->nchildren);
+		memset(node->children, 0, sizeof(*node->children) * node->nchildren);
+		return;
+	}
+	if (node->nchildren + 1 > node->capacity) {
+		byte oldsize = node->capacity;
+		node->capacity = (node->capacity << 1) + 1;
+		node->children = (trieptr)realloc(node->children, \
+			node->capacity * sizeof(*node->children));
+		memset(node->children + (oldsize * sizeof(*node->children)),  \
+			0, (node->capacity - oldsize) * sizeof(*node->children));
 	}
 }
 
 static trieptr add_trie(trieptr node, byte index, byte c) {
-	
+	reserve(node, 1);
 }
 
 static byte binary_search(trieptr node, byte c) {
@@ -61,7 +78,7 @@ int insert_word(trieptr root, const char* word) {
 	char c;
 	trieptr node = root;
 	while (c = *wordptr) {
-		byte index = binary_search(node);
+		byte index = binary_search(node, c);
 		add_trie(node, index, c);
 		wordptr++;
 	}
