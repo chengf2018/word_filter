@@ -18,6 +18,7 @@ typedef struct _trie {
 }*trieptr;
 
 static size_t g_memsize = 0;
+static int g_ignorecase = 1;
 
 static inline void* word_filter_malloc(size_t size) {
 	g_memsize += size;
@@ -31,6 +32,10 @@ static inline void* word_filter_realloc(void* p, size_t newsize, size_t oldsize)
 	g_memsize += newsize;
 	g_memsize -= oldsize;
 	return realloc(p, newsize);
+}
+
+static inline char tolower(char c) {
+	return (c >= 'A' && c <= 'Z') ? (c + 32) : c;
 }
 
 static inline char* copy_string(char* str) {
@@ -99,19 +104,19 @@ static int reserve(trieptr node, byte addsize) {
 
 static trieptr add_trie(trieptr node, byte index, byte c, byte isword) {
 	if (!reserve(node, 1)) return NULL;
-	struct _trie newnode = {0};
-	newnode.data = c;
-	newnode.isword = isword;
 
 	int movesize = node->nchildren - index;
 	if (movesize > 0) {
 		memmove(&node->children[index+1], &node->children[index],\
 		 movesize * sizeof(struct _trie));
 	}
-	node->children[index] = newnode;
+	trieptr newnode = &node->children[index];
+	memset((void*)newnode, 0, sizeof(*newnode));
+	newnode->data = c;
+	newnode->isword = isword;
 	node->nchildren++;
 
-	return &node->children[index];
+	return newnode;
 }
 
 static byte binary_search(trieptr node, byte c, int *exist) {
@@ -123,10 +128,11 @@ static byte binary_search(trieptr node, byte c, int *exist) {
 
 	while (l <= r) {
 		byte middle = (l + r) >> 1;
-		if (node->children[middle].data > c) {
+		byte data = node->children[middle].data;
+		if (data > c) {
 			r = middle - 1;
 		}
-		else if (node->children[middle].data == c) {
+		else if (data == c) {
 			if (exist) *exist = 1;
 			l = middle;
 			break;
@@ -145,6 +151,7 @@ int insert_word(trieptr root, const char* word) {
 	char c;
 	trieptr node = root;
 	while (c = *wordptr) {
+		if (g_ignorecase)c = tolower(c);
 		int exist = 0;
 		byte index = binary_search(node, c, &exist);
 		byte isword = *(wordptr+1) == '\0';
@@ -163,7 +170,7 @@ int insert_word(trieptr root, const char* word) {
 	return 1;
 }
 
-int clean_all(trieptr root) {
+void clean_all(trieptr root) {
 	free_node(root);
 	word_filter_free(root, sizeof(*root));
 }
@@ -177,8 +184,8 @@ int search_word(trieptr root, const char* word, char **word_key) {
 	int find = 0;
 	char* str = NULL;
 
-	while (c = *wordptr)
-	{
+	while (c = *wordptr) {
+		if (g_ignorecase) c = tolower(c);
 		int exist = 0;
 		byte index = binary_search(node, c, &exist);
 		if (!exist) break;
@@ -200,7 +207,7 @@ int search_word(trieptr root, const char* word, char **word_key) {
 }
 
 int search_word_ex(trieptr root, const char* word) {
-	char* wordptr = word;
+	const char* wordptr = word;
 	int find = 0;
 	while (*wordptr) {
 		char* string = NULL;
@@ -218,8 +225,13 @@ int search_word_ex(trieptr root, const char* word) {
 	return find;
 }
 
+//需在插入单词前调用
+void set_ignore_case(int is_ignore) {
+	g_ignorecase = is_ignore;
+}
+
 int main(int argc, char **argv) {
-	
+	set_ignore_case(1);
 	trieptr root = create_trie();
 	insert_word(root, "hello world");
 	insert_word(root, "hello");
@@ -229,10 +241,8 @@ int main(int argc, char **argv) {
 	insert_word(root, "hel");
 	insert_word(root, "he");
 	insert_word(root, "hhh");
-	insert_word(root, "o");
-
-	char* string[64] = { 0 };
-	int find = search_word_ex(root, "hello wohhhhhhh", string, 64);
+	insert_word(root, "O");
+	int find = search_word_ex(root, "HELlo wohhhhhhh");
 
 	clean_all(root);
 
