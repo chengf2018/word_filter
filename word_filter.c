@@ -17,8 +17,18 @@ typedef struct _trie {
 	struct _trie *children;
 }*trieptr;
 
+typedef struct _str_node {
+	char* str;
+	struct _str_node* next;
+}*strnodeptr;
+
+typedef struct _wordfilter_ctx {
+	int ignorecase;
+	trieptr word_root;
+	trieptr skip_word_root;
+}*wordfilterctxptr;
+
 static size_t g_memsize = 0;
-static int g_ignorecase = 1;
 
 static inline void* word_filter_malloc(size_t size) {
 	g_memsize += size;
@@ -55,6 +65,17 @@ static inline trieptr create_trie() {
 	return newtrie;
 }
 
+static inline wordfilterctxptr create_word_filter_context() {
+	wordfilterctxptr ctx = (wordfilterctxptr)word_filter_malloc(sizeof(*ctx));
+	if (!ctx) return NULL;
+
+	memset(ctx, 0, sizeof(*ctx));
+	ctx->ignorecase = 0;
+	ctx->word_root = create_trie();
+	ctx->skip_word_root = create_trie();
+	return ctx;
+}
+
 static inline void free_node(trieptr node) {
 	if (node && node->children) {
 		for (int i = 0; i < node->capacity; i++) {
@@ -64,6 +85,17 @@ static inline void free_node(trieptr node) {
 		}
 		word_filter_free(node->children, node->capacity * sizeof(*node->children));
 		node->children = NULL;
+	}
+}
+
+static inline void free_str_list(strnodeptr strlist) {
+	strnodeptr node = strlist;
+	while (node) {
+		if (node->str)
+			word_filter_free(node->str, strlen(node->str) + 1);
+		strnodeptr prenode = node;
+		node = node->next;
+		free(prenode);
 	}
 }
 
@@ -144,17 +176,44 @@ static byte binary_search(trieptr node, byte c, int *exist) {
 	return l;
 }
 
-int insert_word(trieptr root, const char* word) {
+static inline int skip_word(trieptr word_root, const char** str, int ignorecase) {
+	if (!str) return 0;
+	char c;
+	int find = 0;
+	byte pos_index = 0;
+	trieptr node = word_root;
+	const char* wordptr = *str;
+
+	while (c = *wordptr) {
+		if (ignorecase) c = tolower(c);
+		int exist = 0;
+		byte index = binary_search(node, c, &exist);
+		if (!exist) break;
+
+		pos_index++;
+		node = &node->children[index];
+
+		if (node->isword) {
+			find = pos_index;
+		}
+		wordptr++;
+	}
+	if (find)
+		*str += find;
+	return find;
+}
+
+static int do_insert_word(wordfilterctxptr ctx, trieptr root, const char* word) {
 	if (strlen(word) > MAX_WORD_LENGTH) return 0;
 
 	const char* wordptr = word;
 	char c;
 	trieptr node = root;
 	while (c = *wordptr) {
-		if (g_ignorecase)c = tolower(c);
+		if (ctx->ignorecase)c = tolower(c);
 		int exist = 0;
 		byte index = binary_search(node, c, &exist);
-		byte isword = *(wordptr+1) == '\0';
+		byte isword = *(wordptr + 1) == '\0';
 		if (exist) {
 			node = &node->children[index];
 			if (isword)
@@ -170,25 +229,22 @@ int insert_word(trieptr root, const char* word) {
 	return 1;
 }
 
-void clean_all(trieptr root) {
-	free_node(root);
-	word_filter_free(root, sizeof(*root));
-}
-
-int search_word(trieptr root, const char* word, char **word_key) {
-	const char* wordptr = word;
+static int do_search_word(wordfilterctxptr ctx, trieptr word_root, trieptr skip_word_root, const char* word, char** word_key) {
 	char c;
+	int ignorecase = ctx->ignorecase;
+	int find = 0;
 	char trie_stack[MAX_WORD_LENGTH + 1] = { 0 };
 	byte trie_stack_index = 0;
-	trieptr node = root;
-	int find = 0;
-	char* str = NULL;
+	trieptr node = word_root;
+	const char* wordptr = word;
+	int skip_num = skip_word(skip_word_root, &wordptr, ignorecase);
 
 	while (c = *wordptr) {
-		if (g_ignorecase) c = tolower(c);
+		if (ignorecase) c = tolower(c);
 		int exist = 0;
 		byte index = binary_search(node, c, &exist);
 		if (!exist) break;
+
 		trie_stack[trie_stack_index++] = c;
 		node = &node->children[index];
 
@@ -196,22 +252,49 @@ int search_word(trieptr root, const char* word, char **word_key) {
 			find = trie_stack_index;
 		}
 		wordptr++;
+		skip_num += skip_word(skip_word_root, &wordptr, ignorecase);
 	}
 
-	if (find) {
+	if (find && word_key) {
 		trie_stack[find] = '\0';
-		if (word_key) *word_key = copy_string(trie_stack);
+		*word_key = copy_string(trie_stack);
 	}
 
-	return find;
+	return find + skip_num;
 }
 
-int search_word_ex(trieptr root, const char* word) {
+int insert_word(wordfilterctxptr ctx, const char* word) {
+	return do_insert_word(ctx, ctx->word_root, word);
+}
+
+int insert_skip_word(wordfilterctxptr ctx, const char* word) {
+	return do_insert_word(ctx, ctx->skip_word_root, word);
+}
+
+void clean_ctx(wordfilterctxptr ctx) {
+	if (!ctx) return;
+	if (ctx->word_root) {
+		free_node(ctx->word_root);
+		word_filter_free(ctx->word_root, sizeof(*ctx->word_root));
+	}
+	if (ctx->skip_word_root) {
+		free_node(ctx->skip_word_root);
+		word_filter_free(ctx->skip_word_root, sizeof(*ctx->skip_word_root));
+	}
+
+	word_filter_free(ctx, sizeof(*ctx));
+}
+
+int search_word(wordfilterctxptr ctx, const char* word, char **word_key) {
+	return do_search_word(ctx, ctx->word_root, ctx->skip_word_root, word, word_key);
+}
+
+int search_word_ex(wordfilterctxptr ctx, const char* word) {
 	const char* wordptr = word;
 	int find = 0;
 	while (*wordptr) {
 		char* string = NULL;
-		int ret = search_word(root, wordptr, &string);
+		int ret = search_word(ctx, wordptr, &string);
 		if (ret && string) {
 			find = 1; 
 			printf("check:%s\n", string);
@@ -226,25 +309,27 @@ int search_word_ex(trieptr root, const char* word) {
 }
 
 //需在插入单词前调用
-void set_ignore_case(int is_ignore) {
-	g_ignorecase = is_ignore;
+void set_ignore_case(wordfilterctxptr ctx, int is_ignore) {
+	ctx->ignorecase = is_ignore;
 }
 
 int main(int argc, char **argv) {
-	set_ignore_case(1);
-	trieptr root = create_trie();
-	insert_word(root, "hello world");
-	insert_word(root, "hello");
-	insert_word(root, "hi");
-	insert_word(root, "h");
-	insert_word(root, "ll");
-	insert_word(root, "hel");
-	insert_word(root, "he");
-	insert_word(root, "hhh");
-	insert_word(root, "O");
-	int find = search_word_ex(root, "HELlo wohhhhhhh");
+	wordfilterctxptr ctx = create_word_filter_context();
+	set_ignore_case(ctx, 1);
+	insert_word(ctx, "hello world");
+	insert_word(ctx, "hello");
+	insert_word(ctx, "hi");
+	insert_word(ctx, "h");
+	insert_word(ctx, "ll");
+	insert_word(ctx, "hel");
+	insert_word(ctx, "he");
+	insert_word(ctx, "hhh");
+	insert_word(ctx, "O");
 
-	clean_all(root);
+	insert_skip_word(ctx, "*");
+	int find = search_word_ex(ctx, "HEL*lo wohhhhhhh");
+
+	clean_ctx(ctx);
 
 	printf("memroy alloc size:%d\n", g_memsize);
 	return 0;
