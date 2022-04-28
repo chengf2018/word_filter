@@ -48,9 +48,10 @@ static inline char tolower(char c) {
 	return (c >= 'A' && c <= 'Z') ? (c + 32) : c;
 }
 
-static inline char* copy_string(char* str) {
+static inline char* copy_string(const char* str) {
 	size_t str_len = strlen(str);
 	char * newstr = word_filter_malloc((str_len + 1) * sizeof(char));
+	if (!newstr) return NULL;
 	strcpy(newstr, str);
 	newstr[str_len] = '\0';
 	return newstr;
@@ -88,6 +89,32 @@ static inline void free_node(trieptr node) {
 	}
 }
 
+static inline strnodeptr insert_str(strnodeptr strnode, const char* str) {
+	if (strnode) {
+		strnodeptr newstrnode = (strnodeptr)word_filter_malloc(sizeof(*strnode));
+		if (!newstrnode) return NULL;
+		memset(newstrnode, 0, sizeof(*newstrnode));
+		newstrnode->str = copy_string(str);
+		newstrnode->next = strnode;
+		return newstrnode;
+	}
+	strnode = (strnodeptr)word_filter_malloc(sizeof(*strnode));
+	if (!strnode) return NULL;
+	memset(strnode, 0, sizeof(*strnode));
+	strnode->str = copy_string(str);
+	return strnode;
+}
+
+static inline const char* search_strnode(strnodeptr head, const char* str) {
+	if (!str) return NULL;
+	while (head) {
+		if (strcmp(head->str, str) == 0)
+			return head->str;
+		head = head->next;
+	}
+	return NULL;
+}
+
 static inline void free_str_list(strnodeptr strlist) {
 	strnodeptr node = strlist;
 	while (node) {
@@ -95,7 +122,7 @@ static inline void free_str_list(strnodeptr strlist) {
 			word_filter_free(node->str, strlen(node->str) + 1);
 		strnodeptr prenode = node;
 		node = node->next;
-		free(prenode);
+		word_filter_free(prenode, sizeof(*prenode));
 	}
 }
 
@@ -292,12 +319,15 @@ int search_word(wordfilterctxptr ctx, const char* word, char **word_key) {
 int search_word_ex(wordfilterctxptr ctx, const char* word) {
 	const char* wordptr = word;
 	int find = 0;
+	strnodeptr strnode = NULL;
 	while (*wordptr) {
 		char* string = NULL;
 		int ret = search_word(ctx, wordptr, &string);
 		if (ret && string) {
 			find = 1; 
 			printf("check:%s\n", string);
+			if (!search_strnode(strnode, string))
+				strnode = insert_str(strnode, string);
 			word_filter_free(string, strlen(string) + 1);
 			wordptr += ret;
 		}
@@ -305,6 +335,14 @@ int search_word_ex(wordfilterctxptr ctx, const char* word) {
 			wordptr++;
 		}
 	}
+
+	printf("------------\n");
+	strnodeptr p = strnode;
+	while (p) {
+		printf("%s\n", p->str);
+		p = p->next;
+	}
+	free_str_list(strnode);
 	return find;
 }
 
@@ -316,7 +354,7 @@ void set_ignore_case(wordfilterctxptr ctx, int is_ignore) {
 int main(int argc, char **argv) {
 	wordfilterctxptr ctx = create_word_filter_context();
 	set_ignore_case(ctx, 1);
-	insert_word(ctx, "hello world");
+	insert_word(ctx, "helloworld");
 	insert_word(ctx, "hello");
 	insert_word(ctx, "hi");
 	insert_word(ctx, "h");
@@ -326,8 +364,15 @@ int main(int argc, char **argv) {
 	insert_word(ctx, "hhh");
 	insert_word(ctx, "O");
 
+	for (int i = 1; i < 256; i++) {
+		char s[10] = { 0 };
+		s[0] = ((char)i);
+		insert_word(ctx, s);
+	}
+
 	insert_skip_word(ctx, "*");
-	int find = search_word_ex(ctx, "HEL*lo wohhhhhhh");
+	insert_skip_word(ctx, " ");
+	int find = search_word_ex(ctx, "HEL*lo worldhhhhhhh");
 
 	clean_ctx(ctx);
 
