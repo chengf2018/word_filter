@@ -24,6 +24,7 @@ typedef struct _str_node {
 
 typedef struct _wordfilter_ctx {
 	int ignorecase;
+	char mask_word;
 	trieptr word_root;
 	trieptr skip_word_root;
 }*wordfilterctxptr;
@@ -74,6 +75,7 @@ static inline wordfilterctxptr create_word_filter_context() {
 	ctx->ignorecase = 0;
 	ctx->word_root = create_trie();
 	ctx->skip_word_root = create_trie();
+	ctx->mask_word = '*';
 	return ctx;
 }
 
@@ -287,7 +289,7 @@ static int do_search_word(wordfilterctxptr ctx, trieptr word_root, trieptr skip_
 		*word_key = copy_string(trie_stack);
 	}
 
-	return find + skip_num;
+	return find ? (find + skip_num) : 0;
 }
 
 int insert_word(wordfilterctxptr ctx, const char* word) {
@@ -316,39 +318,75 @@ int search_word(wordfilterctxptr ctx, const char* word, char **word_key) {
 	return do_search_word(ctx, ctx->word_root, ctx->skip_word_root, word, word_key);
 }
 
-int search_word_ex(wordfilterctxptr ctx, const char* word) {
+int search_word_ex(wordfilterctxptr ctx, const char* word, strnodeptr* strlist) {
 	const char* wordptr = word;
 	int find = 0;
 	strnodeptr strnode = NULL;
 	while (*wordptr) {
 		char* string = NULL;
-		int ret = search_word(ctx, wordptr, &string);
-		if (ret && string) {
+		int ret = strlist ? search_word(ctx, wordptr, &string) : search_word(ctx, wordptr, NULL);
+		if (ret) {
 			find = 1; 
-			printf("check:%s\n", string);
-			if (!search_strnode(strnode, string))
-				strnode = insert_str(strnode, string);
-			word_filter_free(string, strlen(string) + 1);
 			wordptr += ret;
 		}
 		else {
 			wordptr++;
 		}
+
+		if (string) {
+			if (strlist && !search_strnode(strnode, string))
+				strnode = insert_str(strnode, string);
+			word_filter_free(string, strlen(string) + 1);
+		}
+	}
+	if (strlist) {
+		*strlist = strnode;
+	}
+	return find;
+}
+
+char* filter_word(wordfilterctxptr ctx, const char* word, strnodeptr *strlist) {
+	if (!ctx || !word) return NULL;
+	char* wordptr, *wordstartptr;
+	char mask_word = ctx->mask_word;
+	wordptr = wordstartptr = copy_string(word);
+	int find = 0;
+	strnodeptr strnode = NULL;
+	while (*wordptr) {
+		char* string = NULL;
+		int ret = strlist ? search_word(ctx, wordptr, &string) : search_word(ctx, wordptr, NULL);
+		if (ret) {
+			find = 1;
+			for (int i = 0; i < ret; i++) {
+				*(wordptr + i) = mask_word;
+			}
+			wordptr += ret;
+		}
+		else {
+			wordptr++;
+		}
+		if (string) {
+			printf("check:%s\n", string);
+			if (strlist && !search_strnode(strnode, string))
+				strnode = insert_str(strnode, string);
+			word_filter_free(string, strlen(string) + 1);
+		}
 	}
 
-	printf("------------\n");
-	strnodeptr p = strnode;
-	while (p) {
-		printf("%s\n", p->str);
-		p = p->next;
+	if (strlist) {
+		*strlist = strnode;
 	}
-	free_str_list(strnode);
-	return find;
+
+	return wordstartptr;
 }
 
 //需在插入单词前调用
 void set_ignore_case(wordfilterctxptr ctx, int is_ignore) {
 	ctx->ignorecase = is_ignore;
+}
+
+void set_mask_word(wordfilterctxptr ctx, char mask_word) {
+	ctx->mask_word = mask_word;
 }
 
 int main(int argc, char **argv) {
@@ -363,17 +401,40 @@ int main(int argc, char **argv) {
 	insert_word(ctx, "he");
 	insert_word(ctx, "hhh");
 	insert_word(ctx, "O");
-
-	for (int i = 1; i < 256; i++) {
+	insert_word(ctx, "0");
+	/*for (int i = 1; i < 256; i++) {
 		char s[10] = { 0 };
 		s[0] = ((char)i);
 		insert_word(ctx, s);
-	}
+	}*/
 
 	insert_skip_word(ctx, "*");
 	insert_skip_word(ctx, " ");
-	int find = search_word_ex(ctx, "HEL*lo worldhhhhhhh");
 
+	printf("test1:------------\n");
+	strnodeptr strlist1;
+	int find = search_word_ex(ctx, "HEL*lo world0_)000????hhhhhhh", &strlist1);
+	strnodeptr p = strlist1;
+	while (p) {
+		printf("%s\n", p->str);
+		p = p->next;
+	}
+	//int find = search_word_ex(ctx, "HEL*lo world0_)000????hhhhhhh");
+	printf("test2:------------\n");
+	strnodeptr strlist2;
+	char *newstr = filter_word(ctx, "HEL*lo world0_)000????hhhhhhh", &strlist2);
+	printf("newstr:%s\n", newstr);
+	printf("mask words:------------\n");
+	p = strlist2;
+	while (p) {
+		printf("%s\n", p->str);
+		p = p->next;
+	}
+
+
+	word_filter_free(newstr, strlen(newstr) + 1);
+	free_str_list(strlist1);
+	free_str_list(strlist2);
 	clean_ctx(ctx);
 
 	printf("memroy alloc size:%d\n", g_memsize);
