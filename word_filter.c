@@ -5,8 +5,11 @@
 #include <stdio.h>
 
 #define MAX_TRIE_SIZE 0xFF
-#define MAX_WORD_LENGTH 0xFF //屏蔽词的大小限定
+#define MAX_WORD_LENGTH 0xFF //屏蔽字的大小限制
+#define MAX_FILTER_NUM 10
 
+
+typedef int lock;
 typedef unsigned char byte;
 
 typedef struct _trie {
@@ -14,7 +17,7 @@ typedef struct _trie {
 	byte nchildren;
 	byte capacity;
 	byte isword;
-	struct _trie *children;
+	struct _trie* children;
 }*trieptr;
 
 typedef struct _str_node {
@@ -30,35 +33,45 @@ typedef struct _wordfilter_ctx {
 }*wordfilterctxptr;
 
 static size_t g_memsize = 0;
+static wordfilterctxptr g_ctx_instance[MAX_FILTER_NUM] = { NULL };
+static lock g_ctx_lock;
 
-static inline void* word_filter_malloc(size_t size) {
+static inline void*
+word_filter_malloc(size_t size) {
 	g_memsize += size;
 	return malloc(size);
 }
-static inline void word_filter_free(void* p, size_t size) {
+
+static inline void
+word_filter_free(void* p, size_t size) {
 	g_memsize -= size;
 	free(p);
 }
-static inline void* word_filter_realloc(void* p, size_t newsize, size_t oldsize) {
+
+static inline void*
+word_filter_realloc(void* p, size_t newsize, size_t oldsize) {
 	g_memsize += newsize;
 	g_memsize -= oldsize;
 	return realloc(p, newsize);
 }
 
-static inline char tolower(char c) {
+static inline char
+word_filter_tolower(char c) {
 	return (c >= 'A' && c <= 'Z') ? (c + 32) : c;
 }
 
-static inline char* copy_string(const char* str) {
+static inline char*
+copy_string(const char* str) {
 	size_t str_len = strlen(str);
-	char * newstr = word_filter_malloc((str_len + 1) * sizeof(char));
+	char* newstr = word_filter_malloc((str_len + 1) * sizeof(char));
 	if (!newstr) return NULL;
 	strcpy(newstr, str);
 	newstr[str_len] = '\0';
 	return newstr;
 }
 
-static inline trieptr create_trie() {
+static inline trieptr
+create_trie() {
 	trieptr newtrie = (trieptr)word_filter_malloc(sizeof(*newtrie));
 	memset(newtrie, 0, sizeof(*newtrie));
 	newtrie->capacity = 1;
@@ -67,7 +80,8 @@ static inline trieptr create_trie() {
 	return newtrie;
 }
 
-static inline wordfilterctxptr create_word_filter_context() {
+static inline wordfilterctxptr
+create_word_filter_ctx() {
 	wordfilterctxptr ctx = (wordfilterctxptr)word_filter_malloc(sizeof(*ctx));
 	if (!ctx) return NULL;
 
@@ -79,19 +93,23 @@ static inline wordfilterctxptr create_word_filter_context() {
 	return ctx;
 }
 
-static inline void free_node(trieptr node) {
+static inline void
+free_node(trieptr node) {
 	if (node && node->children) {
 		for (int i = 0; i < node->capacity; i++) {
 			trieptr childnode = &node->children[i];
-			if (childnode->children) 
+			if (childnode->children)
 				free_node(childnode);
 		}
 		word_filter_free(node->children, node->capacity * sizeof(*node->children));
 		node->children = NULL;
+		node->capacity = 0;
+		node->nchildren = 0;
 	}
 }
 
-static inline strnodeptr insert_str(strnodeptr strnode, const char* str) {
+static inline strnodeptr
+insert_str(strnodeptr strnode, const char* str) {
 	if (strnode) {
 		strnodeptr newstrnode = (strnodeptr)word_filter_malloc(sizeof(*strnode));
 		if (!newstrnode) return NULL;
@@ -107,7 +125,8 @@ static inline strnodeptr insert_str(strnodeptr strnode, const char* str) {
 	return strnode;
 }
 
-static inline const char* search_strnode(strnodeptr head, const char* str) {
+static inline const char*
+search_strnode(strnodeptr head, const char* str) {
 	if (!str) return NULL;
 	while (head) {
 		if (strcmp(head->str, str) == 0)
@@ -117,7 +136,8 @@ static inline const char* search_strnode(strnodeptr head, const char* str) {
 	return NULL;
 }
 
-static inline void free_str_list(strnodeptr strlist) {
+static inline void
+free_str_list(strnodeptr strlist) {
 	strnodeptr node = strlist;
 	while (node) {
 		if (node->str)
@@ -128,7 +148,8 @@ static inline void free_str_list(strnodeptr strlist) {
 	}
 }
 
-static inline byte calcinitsize(byte addsize) {
+static inline byte
+calcinitsize(byte addsize) {
 	for (int i = 1; i <= 8; i++) {
 		int size = (1 << i) - 1;
 		if (size >= addsize) return (byte)size;
@@ -136,7 +157,8 @@ static inline byte calcinitsize(byte addsize) {
 	return (byte)addsize;
 }
 
-static int reserve(trieptr node, byte addsize) {
+static int
+reserve(trieptr node, byte addsize) {
 	if (node->capacity == MAX_TRIE_SIZE) return 1;
 	addsize = addsize ? addsize : 1;
 	if (!node->children) {
@@ -151,25 +173,26 @@ static int reserve(trieptr node, byte addsize) {
 	if (node->nchildren + 1 > node->capacity) {
 		byte oldsize = node->capacity;
 		byte newcapacity = (node->capacity << 1) + 1;
-		trieptr newchildren = (trieptr)word_filter_realloc(node->children, \
-			sizeof(*node->children) * newcapacity, \
+		trieptr newchildren = (trieptr)word_filter_realloc(node->children,
+			sizeof(*node->children) * newcapacity,
 			sizeof(*node->children) * oldsize);
 		if (!newchildren) return 0;
 		node->capacity = newcapacity;
 		node->children = newchildren;
-		memset(&node->children[oldsize],  \
-			0, sizeof(*node->children) * (newcapacity - oldsize));
+		memset(&node->children[oldsize], 0,
+			sizeof(*node->children) * (newcapacity - oldsize));
 	}
 	return 1;
 }
 
-static trieptr add_trie(trieptr node, byte index, byte c, byte isword) {
+static trieptr
+add_trie(trieptr node, byte index, byte c, byte isword) {
 	if (!reserve(node, 1)) return NULL;
 
 	int movesize = node->nchildren - index;
 	if (movesize > 0) {
-		memmove(&node->children[index+1], &node->children[index],\
-		 movesize * sizeof(struct _trie));
+		memmove(&node->children[index + 1], &node->children[index], \
+			movesize * sizeof(struct _trie));
 	}
 	trieptr newnode = &node->children[index];
 	memset((void*)newnode, 0, sizeof(*newnode));
@@ -180,7 +203,8 @@ static trieptr add_trie(trieptr node, byte index, byte c, byte isword) {
 	return newnode;
 }
 
-static byte binary_search(trieptr node, byte c, int *exist) {
+static byte
+binary_search(trieptr node, byte c, int* exist) {
 	if (node->nchildren == 0) {
 		if (exist) *exist = 0;
 		return 0;
@@ -205,41 +229,50 @@ static byte binary_search(trieptr node, byte c, int *exist) {
 	return l;
 }
 
-static inline int skip_word(trieptr word_root, const char** str, int ignorecase) {
+static inline int
+skip_word(trieptr word_root, const char** str, int ignorecase) {
 	if (!str) return 0;
 	char c;
-	int find = 0;
-	byte pos_index = 0;
-	trieptr node = word_root;
+	int skipnum = 0;
 	const char* wordptr = *str;
 
-	while (c = *wordptr) {
-		if (ignorecase) c = tolower(c);
-		int exist = 0;
-		byte index = binary_search(node, c, &exist);
-		if (!exist) break;
+	while (1) {
+		trieptr node = word_root;
+		byte pos_index = 0;
+		int find = 0;
+		while ((c = *wordptr)) {
+			if (ignorecase) c = word_filter_tolower(c);
+			int exist = 0;
+			byte index = binary_search(node, c, &exist);
+			if (!exist) break;
 
-		pos_index++;
-		node = &node->children[index];
+			pos_index++;
+			node = &node->children[index];
 
-		if (node->isword) {
-			find = pos_index;
+			if (node->isword) {
+				find = pos_index;
+			}
+			wordptr++;
 		}
-		wordptr++;
+		if (find) skipnum += find;
+		else break;
 	}
-	if (find)
-		*str += find;
-	return find;
+
+	if (skipnum)
+		*str += skipnum;
+
+	return skipnum;
 }
 
-static int do_insert_word(wordfilterctxptr ctx, trieptr root, const char* word) {
+static int
+do_insert_word(wordfilterctxptr ctx, trieptr root, const char* word) {
 	if (strlen(word) > MAX_WORD_LENGTH) return 0;
 
 	const char* wordptr = word;
 	char c;
 	trieptr node = root;
-	while (c = *wordptr) {
-		if (ctx->ignorecase)c = tolower(c);
+	while ((c = *wordptr)) {
+		if (ctx->ignorecase) c = word_filter_tolower(c);
 		int exist = 0;
 		byte index = binary_search(node, c, &exist);
 		byte isword = *(wordptr + 1) == '\0';
@@ -258,7 +291,8 @@ static int do_insert_word(wordfilterctxptr ctx, trieptr root, const char* word) 
 	return 1;
 }
 
-static int do_search_word(wordfilterctxptr ctx, trieptr word_root, trieptr skip_word_root, const char* word, char** word_key) {
+static int
+do_search_word(wordfilterctxptr ctx, trieptr word_root, trieptr skip_word_root, const char* word, char** word_key) {
 	char c;
 	int ignorecase = ctx->ignorecase;
 	int find = 0;
@@ -266,12 +300,14 @@ static int do_search_word(wordfilterctxptr ctx, trieptr word_root, trieptr skip_
 	byte trie_stack_index = 0;
 	trieptr node = word_root;
 	const char* wordptr = word;
-	int skip_num = skip_word(skip_word_root, &wordptr, ignorecase);
+	int skip_num = 0;
+	int exist = 0;
+	byte index = 0;
 
-	while (c = *wordptr) {
-		if (ignorecase) c = tolower(c);
-		int exist = 0;
-		byte index = binary_search(node, c, &exist);
+	while ((c = *wordptr)) {
+		if (ignorecase) c = word_filter_tolower(c);
+		exist = 0;
+		index = binary_search(node, c, &exist);
 		if (!exist) break;
 
 		trie_stack[trie_stack_index++] = c;
@@ -292,41 +328,54 @@ static int do_search_word(wordfilterctxptr ctx, trieptr word_root, trieptr skip_
 	return find ? (find + skip_num) : 0;
 }
 
-int insert_word(wordfilterctxptr ctx, const char* word) {
+int
+insert_word(wordfilterctxptr ctx, const char* word) {
 	return do_insert_word(ctx, ctx->word_root, word);
 }
 
-int insert_skip_word(wordfilterctxptr ctx, const char* word) {
+int
+insert_skip_word(wordfilterctxptr ctx, const char* word) {
 	return do_insert_word(ctx, ctx->skip_word_root, word);
 }
 
-void clean_ctx(wordfilterctxptr ctx) {
+void
+clean_ctx(wordfilterctxptr ctx) {
 	if (!ctx) return;
 	if (ctx->word_root) {
 		free_node(ctx->word_root);
-		word_filter_free(ctx->word_root, sizeof(*ctx->word_root));
 	}
 	if (ctx->skip_word_root) {
 		free_node(ctx->skip_word_root);
+	}
+}
+
+void free_ctx(wordfilterctxptr ctx) {
+	clean_ctx(ctx);
+	if (ctx->word_root) {
+		word_filter_free(ctx->word_root, sizeof(*ctx->word_root));
+	}
+	if (ctx->skip_word_root) {
 		word_filter_free(ctx->skip_word_root, sizeof(*ctx->skip_word_root));
 	}
-
 	word_filter_free(ctx, sizeof(*ctx));
 }
 
-int search_word(wordfilterctxptr ctx, const char* word, char **word_key) {
+int
+search_word(wordfilterctxptr ctx, const char* word, char** word_key) {
 	return do_search_word(ctx, ctx->word_root, ctx->skip_word_root, word, word_key);
 }
 
-int search_word_ex(wordfilterctxptr ctx, const char* word, strnodeptr* strlist) {
+int
+search_word_ex(wordfilterctxptr ctx, const char* word, strnodeptr* strlist) {
 	const char* wordptr = word;
 	int find = 0;
 	strnodeptr strnode = NULL;
 	while (*wordptr) {
 		char* string = NULL;
-		int ret = strlist ? search_word(ctx, wordptr, &string) : search_word(ctx, wordptr, NULL);
+		int ret = strlist ? search_word(ctx, wordptr, &string)
+			: search_word(ctx, wordptr, NULL);
 		if (ret) {
-			find = 1; 
+			find = 1;
 			wordptr += ret;
 		}
 		else {
@@ -345,28 +394,47 @@ int search_word_ex(wordfilterctxptr ctx, const char* word, strnodeptr* strlist) 
 	return find;
 }
 
-char* filter_word(wordfilterctxptr ctx, const char* word, strnodeptr *strlist) {
+char*
+filter_word(wordfilterctxptr ctx, const char* word, strnodeptr* strlist, int* isfilter) {
 	if (!ctx || !word) return NULL;
-	char* wordptr, *wordstartptr;
+	const char* wordptr;
+	char* wordstartptr;
 	char mask_word = ctx->mask_word;
-	wordptr = wordstartptr = copy_string(word);
-	int find = 0;
+	int str_len = strlen(word) + 1;
+	int find = 0, strpos = 0;
+	wordptr = word;
+	wordstartptr = (char*)word_filter_malloc(str_len * sizeof(char));
+	memset(wordstartptr, 0, str_len * sizeof(char));
+
 	strnodeptr strnode = NULL;
 	while (*wordptr) {
 		char* string = NULL;
-		int ret = strlist ? search_word(ctx, wordptr, &string) : search_word(ctx, wordptr, NULL);
+		int ret = strlist ? search_word(ctx, wordptr, &string)
+			: search_word(ctx, wordptr, NULL);
 		if (ret) {
 			find = 1;
 			for (int i = 0; i < ret; i++) {
-				*(wordptr + i) = mask_word;
+				char c = *(wordptr + i);
+				if (c & 0x80) {
+					//多字节编码
+					int skip = 1;
+					for (int j = 0; j < 3; j++) {
+						if (c & (0x40 >> j)) {
+							skip++;
+						}
+						else break;
+					}
+					i += skip;
+				}
+				wordstartptr[strpos++] = mask_word;
 			}
 			wordptr += ret;
 		}
 		else {
+			wordstartptr[strpos++] = *wordptr;
 			wordptr++;
 		}
 		if (string) {
-			printf("check:%s\n", string);
 			if (strlist && !search_strnode(strnode, string))
 				strnode = insert_str(strnode, string);
 			word_filter_free(string, strlen(string) + 1);
@@ -377,20 +445,26 @@ char* filter_word(wordfilterctxptr ctx, const char* word, strnodeptr *strlist) {
 		*strlist = strnode;
 	}
 
+	if (isfilter) {
+		*isfilter = find;
+	}
+
 	return wordstartptr;
 }
 
-//需在插入单词前调用
-void set_ignore_case(wordfilterctxptr ctx, int is_ignore) {
+//忽略大小写需要在insert_word之前调用
+void
+set_ignore_case(wordfilterctxptr ctx, int is_ignore) {
 	ctx->ignorecase = is_ignore;
 }
 
-void set_mask_word(wordfilterctxptr ctx, char mask_word) {
+void
+set_mask_word(wordfilterctxptr ctx, char mask_word) {
 	ctx->mask_word = mask_word;
 }
 
 int main(int argc, char **argv) {
-	wordfilterctxptr ctx = create_word_filter_context();
+	wordfilterctxptr ctx = create_word_filter_ctx();
 	set_ignore_case(ctx, 1);
 	insert_word(ctx, "helloworld");
 	insert_word(ctx, "hello");
@@ -398,10 +472,10 @@ int main(int argc, char **argv) {
 	insert_word(ctx, "h");
 	insert_word(ctx, "ll");
 	insert_word(ctx, "hel");
-	insert_word(ctx, "he");
-	insert_word(ctx, "hhh");
-	insert_word(ctx, "O");
-	insert_word(ctx, "0");
+	insert_word(ctx, "aa");
+	insert_word(ctx, "bb");
+	insert_word(ctx, "cc");
+	insert_word(ctx, "dd");
 	/*for (int i = 1; i < 256; i++) {
 		char s[10] = { 0 };
 		s[0] = ((char)i);
@@ -413,7 +487,7 @@ int main(int argc, char **argv) {
 
 	printf("test1:------------\n");
 	strnodeptr strlist1;
-	int find = search_word_ex(ctx, "HEL*lo world0_)000????hhhhhhh", &strlist1);
+	int find = search_word_ex(ctx, "aabbccddssseeqeqrqhelloworld..dsfg", &strlist1);
 	strnodeptr p = strlist1;
 	while (p) {
 		printf("%s\n", p->str);
@@ -422,7 +496,8 @@ int main(int argc, char **argv) {
 	//int find = search_word_ex(ctx, "HEL*lo world0_)000????hhhhhhh");
 	printf("test2:------------\n");
 	strnodeptr strlist2;
-	char *newstr = filter_word(ctx, "HEL*lo world0_)000????hhhhhhh", &strlist2);
+	int isFilter = 0;
+	char *newstr = filter_word(ctx, "zzzcczzzsdfwerjadfasabasadaavbjslw", &strlist2, &isFilter);
 	printf("newstr:%s\n", newstr);
 	printf("mask words:------------\n");
 	p = strlist2;
@@ -436,6 +511,7 @@ int main(int argc, char **argv) {
 	free_str_list(strlist1);
 	free_str_list(strlist2);
 	clean_ctx(ctx);
+	free_ctx(ctx);
 
 	printf("memroy alloc size:%d\n", g_memsize);
 	return 0;
