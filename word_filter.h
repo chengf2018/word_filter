@@ -26,25 +26,25 @@ typedef struct _wordfilter_ctx {
 	trieptr skip_word_root;
 }*wordfilterctxptr;
 
-size_t word_filter_get_memsize();
-void* word_filter_malloc(size_t size);
-void word_filter_free(void* p, size_t size);
-void* word_filter_realloc(void* p, size_t newsize, size_t oldsize);
-void word_filter_free_str_list(strnodeptr strlist);
+size_t wf_get_memsize();
+void* wf_malloc(size_t size);
+void wf_free(void* p, size_t size);
+void* wf_realloc(void* p, size_t newsize, size_t oldsize);
+void wf_free_str_list(strnodeptr strlist);
 
-wordfilterctxptr word_filter_create_ctx();
-void word_filter_clean_ctx(wordfilterctxptr ctx);
-void word_filter_free_ctx(wordfilterctxptr ctx);
+wordfilterctxptr wf_create_ctx();
+void wf_clean_ctx(wordfilterctxptr ctx);
+void wf_free_ctx(wordfilterctxptr ctx);
 
-int word_filter_insert_word(wordfilterctxptr ctx, const char* word);
-int word_filter_insert_skip_word(wordfilterctxptr ctx, const char* word);
-int word_filter_search_word(wordfilterctxptr ctx, const char* word, 
+int wf_insert_word(wordfilterctxptr ctx, const char* word);
+int wf_insert_skip_word(wordfilterctxptr ctx, const char* word);
+int wf_search_word(wordfilterctxptr ctx, const char* word, 
 	char** word_key);
-int word_filter_search_word_ex(wordfilterctxptr ctx, const char* word, 
+int wf_search_word_ex(wordfilterctxptr ctx, const char* word, 
 	strnodeptr* strlist);
-char* word_filter_filter_word(wordfilterctxptr ctx, const char* word, 
-	strnodeptr* strlist, int* isfilter);
-void word_filter_set_ignore_case(wordfilterctxptr ctx, int is_ignore);
-void word_filter_set_mask_word(wordfilterctxptr ctx, char mask_word);
+int wf_filter_word(wordfilterctxptr ctx, const char* word, 
+	strnodeptr* strlist, char *outstr);
+void wf_set_ignore_case(wordfilterctxptr ctx, int is_ignore);
+void wf_set_mask_word(wordfilterctxptr ctx, char mask_word);
 
 #endif //__WORD_FILTER_H

@@ -17,7 +17,7 @@
  * connection with the software or the use or other dealings in the Software.
  */
 //author:chengf2018
-//date:2022-05-27
+//update date:2022-07-27
 //License:MIT
 
 #include "word_filter.h"
@@ -29,50 +29,50 @@
 
 static size_t g_memsize = 0;
 
-inline size_t word_filter_get_memsize() {
+inline size_t wf_get_memsize() {
 	return g_memsize;
 }
 
 void*
-word_filter_malloc(size_t size) {
+wf_malloc(size_t size) {
 	g_memsize += size;
 	return malloc(size);
 }
 
 void
-word_filter_free(void* p, size_t size) {
+wf_free(void* p, size_t size) {
 	g_memsize -= size;
 	free(p);
 }
 
 void*
-word_filter_realloc(void* p, size_t newsize, size_t oldsize) {
+wf_realloc(void* p, size_t newsize, size_t oldsize) {
 	g_memsize += newsize;
 	g_memsize -= oldsize;
 	return realloc(p, newsize);
 }
 
 void
-word_filter_free_str_list(strnodeptr strlist) {
+wf_free_str_list(strnodeptr strlist) {
 	strnodeptr node = strlist;
 	while (node) {
 		if (node->str)
-			word_filter_free(node->str, strlen(node->str) + 1);
+			wf_free(node->str, strlen(node->str) + 1);
 		strnodeptr prenode = node;
 		node = node->next;
-		word_filter_free(prenode, sizeof(*prenode));
+		wf_free(prenode, sizeof(*prenode));
 	}
 }
 
 static inline char
-word_filter_tolower(char c) {
+wf_tolower(char c) {
 	return (c >= 'A' && c <= 'Z') ? (c + 32) : c;
 }
 
 static inline char*
 copy_string(const char* str) {
 	size_t str_len = strlen(str);
-	char* newstr = word_filter_malloc((str_len + 1) * sizeof(char));
+	char* newstr = wf_malloc((str_len + 1) * sizeof(char));
 	if (!newstr) return NULL;
 	strcpy(newstr, str);
 	newstr[str_len] = '\0';
@@ -81,10 +81,10 @@ copy_string(const char* str) {
 
 static inline trieptr
 create_trie() {
-	trieptr newtrie = (trieptr)word_filter_malloc(sizeof(*newtrie));
+	trieptr newtrie = (trieptr)wf_malloc(sizeof(*newtrie));
 	memset(newtrie, 0, sizeof(*newtrie));
 	newtrie->capacity = 1;
-	newtrie->children = (trieptr)word_filter_malloc(sizeof(*newtrie));
+	newtrie->children = (trieptr)wf_malloc(sizeof(*newtrie));
 	memset(newtrie->children, 0, sizeof(*newtrie));
 	return newtrie;
 }
@@ -97,7 +97,7 @@ free_node(trieptr node) {
 			if (childnode->children)
 				free_node(childnode);
 		}
-		word_filter_free(node->children, node->capacity * sizeof(*node->children));
+		wf_free(node->children, node->capacity * sizeof(*node->children));
 		node->children = NULL;
 		node->capacity = 0;
 		node->nchildren = 0;
@@ -107,14 +107,14 @@ free_node(trieptr node) {
 static inline strnodeptr
 insert_str(strnodeptr strnode, const char* str) {
 	if (strnode) {
-		strnodeptr newstrnode = (strnodeptr)word_filter_malloc(sizeof(*strnode));
+		strnodeptr newstrnode = (strnodeptr)wf_malloc(sizeof(*strnode));
 		if (!newstrnode) return NULL;
 		memset(newstrnode, 0, sizeof(*newstrnode));
 		newstrnode->str = copy_string(str);
 		newstrnode->next = strnode;
 		return newstrnode;
 	}
-	strnode = (strnodeptr)word_filter_malloc(sizeof(*strnode));
+	strnode = (strnodeptr)wf_malloc(sizeof(*strnode));
 	if (!strnode) return NULL;
 	memset(strnode, 0, sizeof(*strnode));
 	strnode->str = copy_string(str);
@@ -147,7 +147,7 @@ reserve(trieptr node, byte addsize) {
 	addsize = addsize ? addsize : 1;
 	if (!node->children) {
 		byte newcapacity = calcinitsize(addsize);
-		trieptr newchildren = (trieptr)word_filter_malloc(sizeof(*node->children) * newcapacity);
+		trieptr newchildren = (trieptr)wf_malloc(sizeof(*node->children) * newcapacity);
 		if (!newchildren) return 0;
 		node->capacity = newcapacity;
 		node->children = newchildren;
@@ -157,7 +157,7 @@ reserve(trieptr node, byte addsize) {
 	if (node->nchildren + 1 > node->capacity) {
 		byte oldsize = node->capacity;
 		byte newcapacity = (node->capacity << 1) + 1;
-		trieptr newchildren = (trieptr)word_filter_realloc(node->children,
+		trieptr newchildren = (trieptr)wf_realloc(node->children,
 			sizeof(*node->children) * newcapacity,
 			sizeof(*node->children) * oldsize);
 		if (!newchildren) return 0;
@@ -225,7 +225,7 @@ skip_word(trieptr word_root, const char** str, int ignorecase) {
 		byte pos_index = 0;
 		int find = 0;
 		while ((c = *wordptr)) {
-			if (ignorecase) c = word_filter_tolower(c);
+			if (ignorecase) c = wf_tolower(c);
 			int exist = 0;
 			byte index = binary_search(node, c, &exist);
 			if (!exist) break;
@@ -256,7 +256,7 @@ do_insert_word(wordfilterctxptr ctx, trieptr root, const char* word) {
 	char c;
 	trieptr node = root;
 	while ((c = *wordptr)) {
-		if (ctx->ignorecase) c = word_filter_tolower(c);
+		if (ctx->ignorecase) c = wf_tolower(c);
 		int exist = 0;
 		byte index = binary_search(node, c, &exist);
 		byte isword = *(wordptr + 1) == '\0';
@@ -290,7 +290,7 @@ do_search_word(wordfilterctxptr ctx, trieptr word_root, trieptr skip_word_root, 
 	byte index = 0;
 
 	while ((c = *wordptr)) {
-		if (ignorecase) c = word_filter_tolower(c);
+		if (ignorecase) c = wf_tolower(c);
 		exist = 0;
 		index = binary_search(node, c, &exist);
 		if (!exist) break;
@@ -314,18 +314,18 @@ do_search_word(wordfilterctxptr ctx, trieptr word_root, trieptr skip_word_root, 
 }
 
 int
-word_filter_insert_word(wordfilterctxptr ctx, const char* word) {
+wf_insert_word(wordfilterctxptr ctx, const char* word) {
 	return do_insert_word(ctx, ctx->word_root, word);
 }
 
 int
-word_filter_insert_skip_word(wordfilterctxptr ctx, const char* word) {
+wf_insert_skip_word(wordfilterctxptr ctx, const char* word) {
 	return do_insert_word(ctx, ctx->skip_word_root, word);
 }
 
 wordfilterctxptr
-word_filter_create_ctx() {
-	wordfilterctxptr ctx = (wordfilterctxptr)word_filter_malloc(sizeof(*ctx));
+wf_create_ctx() {
+	wordfilterctxptr ctx = (wordfilterctxptr)wf_malloc(sizeof(*ctx));
 	if (!ctx) return NULL;
 
 	memset(ctx, 0, sizeof(*ctx));
@@ -337,7 +337,7 @@ word_filter_create_ctx() {
 }
 
 void
-word_filter_clean_ctx(wordfilterctxptr ctx) {
+wf_clean_ctx(wordfilterctxptr ctx) {
 	if (!ctx) return;
 	if (ctx->word_root) {
 		free_node(ctx->word_root);
@@ -347,31 +347,31 @@ word_filter_clean_ctx(wordfilterctxptr ctx) {
 	}
 }
 
-void word_filter_free_ctx(wordfilterctxptr ctx) {
-	word_filter_clean_ctx(ctx);
+void wf_free_ctx(wordfilterctxptr ctx) {
+	wf_clean_ctx(ctx);
 	if (ctx->word_root) {
-		word_filter_free(ctx->word_root, sizeof(*ctx->word_root));
+		wf_free(ctx->word_root, sizeof(*ctx->word_root));
 	}
 	if (ctx->skip_word_root) {
-		word_filter_free(ctx->skip_word_root, sizeof(*ctx->skip_word_root));
+		wf_free(ctx->skip_word_root, sizeof(*ctx->skip_word_root));
 	}
-	word_filter_free(ctx, sizeof(*ctx));
+	wf_free(ctx, sizeof(*ctx));
 }
 
 int
-word_filter_search_word(wordfilterctxptr ctx, const char* word, char** word_key) {
+wf_search_word(wordfilterctxptr ctx, const char* word, char** word_key) {
 	return do_search_word(ctx, ctx->word_root, ctx->skip_word_root, word, word_key);
 }
 
 int
-word_filter_search_word_ex(wordfilterctxptr ctx, const char* word, strnodeptr* strlist) {
+wf_search_word_ex(wordfilterctxptr ctx, const char* word, strnodeptr* strlist) {
 	const char* wordptr = word;
 	int find = 0;
 	strnodeptr strnode = NULL;
 	while (*wordptr) {
 		char* string = NULL;
-		int ret = strlist ? word_filter_search_word(ctx, wordptr, &string)
-			: word_filter_search_word(ctx, wordptr, NULL);
+		int ret = strlist ? wf_search_word(ctx, wordptr, &string)
+			: wf_search_word(ctx, wordptr, NULL);
 		if (ret) {
 			find = 1;
 			wordptr += ret;
@@ -383,7 +383,7 @@ word_filter_search_word_ex(wordfilterctxptr ctx, const char* word, strnodeptr* s
 		if (string) {
 			if (strlist && !search_strnode(strnode, string))
 				strnode = insert_str(strnode, string);
-			word_filter_free(string, strlen(string) + 1);
+			wf_free(string, strlen(string) + 1);
 		}
 	}
 	if (strlist) {
@@ -392,23 +392,18 @@ word_filter_search_word_ex(wordfilterctxptr ctx, const char* word, strnodeptr* s
 	return find;
 }
 
-char*
-word_filter_filter_word(wordfilterctxptr ctx, const char* word, strnodeptr* strlist, int* isfilter) {
-	if (!ctx || !word) return NULL;
-	const char* wordptr;
-	char* wordstartptr;
+int
+wf_filter_word(wordfilterctxptr ctx, const char* word, strnodeptr* strlist, char *outstr) {
+	if (!ctx || !word || !outstr) return 0;
+	const char* wordptr = word;
 	char mask_word = ctx->mask_word;
-	int str_len = strlen(word) + 1;
 	int find = 0, strpos = 0;
-	wordptr = word;
-	wordstartptr = (char*)word_filter_malloc(str_len * sizeof(char));
-	memset(wordstartptr, 0, str_len * sizeof(char));
 
 	strnodeptr strnode = NULL;
 	while (*wordptr) {
 		char* string = NULL;
-		int ret = strlist ? word_filter_search_word(ctx, wordptr, &string)
-			: word_filter_search_word(ctx, wordptr, NULL);
+		int ret = strlist ? wf_search_word(ctx, wordptr, &string)
+			: wf_search_word(ctx, wordptr, NULL);
 		if (ret) {
 			find = 1;
 			for (int i = 0; i < ret; i++) {
@@ -424,39 +419,35 @@ word_filter_filter_word(wordfilterctxptr ctx, const char* word, strnodeptr* strl
 					}
 					i += skip;
 				}
-				wordstartptr[strpos++] = mask_word;
+				outstr[strpos++] = mask_word;
 			}
 			wordptr += ret;
 		}
 		else {
-			wordstartptr[strpos++] = *wordptr;
+			outstr[strpos++] = *wordptr;
 			wordptr++;
 		}
 		if (string) {
 			if (strlist && !search_strnode(strnode, string))
 				strnode = insert_str(strnode, string);
-			word_filter_free(string, strlen(string) + 1);
+			wf_free(string, strlen(string) + 1);
 		}
 	}
 
 	if (strlist) {
 		*strlist = strnode;
 	}
-
-	if (isfilter) {
-		*isfilter = find;
-	}
-
-	return wordstartptr;
+	outstr[strpos] = '\0';
+	return find;
 }
 
 //the function must used at before insert word
 void
-word_filter_set_ignore_case(wordfilterctxptr ctx, int is_ignore) {
+wf_set_ignore_case(wordfilterctxptr ctx, int is_ignore) {
 	ctx->ignorecase = is_ignore;
 }
 
 void
-word_filter_set_mask_word(wordfilterctxptr ctx, char mask_word) {
+wf_set_mask_word(wordfilterctxptr ctx, char mask_word) {
 	ctx->mask_word = mask_word;
 }

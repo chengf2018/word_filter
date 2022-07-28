@@ -403,17 +403,12 @@ search_word_ex(wordfilterctxptr ctx, const char* word, strnodeptr* strlist) {
 	return find;
 }
 
-char*
-filter_word(wordfilterctxptr ctx, const char* word, strnodeptr *strlist, int *isfilter) {
-	if (!ctx || !word) return NULL;
-	const char* wordptr;
-	char* wordstartptr;
+int
+filter_word(wordfilterctxptr ctx, const char* word, strnodeptr *strlist, char* wordstartptr) {
+	if (!ctx || !word) return 0;
+	const char* wordptr = word;
 	char mask_word = ctx->mask_word;
-	int str_len = strlen(word) + 1;
 	int find = 0, strpos = 0;
-	wordptr = word;
-	wordstartptr = (char*)word_filter_malloc(str_len*sizeof(char));
-	memset(wordstartptr, 0, str_len*sizeof(char));
 
 	strnodeptr strnode = NULL;
 	while (*wordptr) {
@@ -454,11 +449,7 @@ filter_word(wordfilterctxptr ctx, const char* word, strnodeptr *strlist, int *is
 		*strlist = strnode;
 	}
 
-	if (isfilter) {
-		*isfilter = find;
-	}
-
-	return wordstartptr;
+	return find;
 }
 
 //忽略大小写需要在insert_word之前调用
@@ -484,7 +475,6 @@ lnewctx(lua_State *L) {
 	if (filter_id < 1 || filter_id > MAX_FILTER_NUM) {
 		luaL_error(L, "[wordfilter.newctx]: filter id overstep the boundary:[%d]",
 						filter_id);
-		return 0;
 	}
 
 	LOCK(&g_ctx_lock);
@@ -493,13 +483,12 @@ lnewctx(lua_State *L) {
 		UNLOCK(&g_ctx_lock);
 		luaL_error(L, "[wordfilter.newctx]: already create filter,filter id:[%d]",
 						filter_id);
-		return 0;
 	}
 
 	ctx = create_word_filter_ctx();
 	if (!ctx) {
+		UNLOCK(&g_ctx_lock);
 		luaL_error(L, "[wordfilter.newctx]: alloc context error");
-		return 0;
 	}
 
 	set_ignore_case(ctx, ignorecase);
@@ -519,7 +508,6 @@ lcleanctx(lua_State *L) {
 			UNLOCK(&g_ctx_lock);
 			luaL_error(L, "[wordfilter.cleanctx]: filter no created,filter id:[%d]",
 							filter_id);
-			return 0;
 		}
 		clean_ctx(ctx);
 		UNLOCK(&g_ctx_lock);
@@ -540,7 +528,6 @@ lfreectx(lua_State *L) {
 			UNLOCK(&g_ctx_lock);
 			luaL_error(L, "[wordfilter.freectx]: filter no created,filter id:[%d]",
 							filter_id);
-			return 0;
 		}
 		free_ctx(ctx);
 		g_ctx_instance[filter_id-1] = NULL;
@@ -558,7 +545,6 @@ lsetignorecase(lua_State *L) {
 	if (filter_id < 1 || filter_id > MAX_FILTER_NUM) {
 		luaL_error(L, "[wordfilter.setignorecase]: filter id overstep the boundary:[%d]",
 						filter_id);
-		return 0;
 	}
 	int ignorecase = lua_tointeger(L, 2);
 	LOCK(&g_ctx_lock);
@@ -567,7 +553,6 @@ lsetignorecase(lua_State *L) {
 		UNLOCK(&g_ctx_lock);
 		luaL_error(L, "[wordfilter.setignorecase]: filter no created,filter id:[%d]",
 						filter_id);
-		return 0;
 	}
 	ctx->ignorecase = ignorecase;
 	UNLOCK(&g_ctx_lock);
@@ -580,7 +565,6 @@ lsetmaskword(lua_State *L) {
 	if (filter_id < 1 || filter_id > MAX_FILTER_NUM) {
 		luaL_error(L, "[wordfilter.setmaskword]: filter id overstep the boundary:[%d]",
 						filter_id);		
-		return 0;
 	}
 	int ignorecase = lua_tointeger(L, 2);
 	LOCK(&g_ctx_lock);
@@ -589,7 +573,6 @@ lsetmaskword(lua_State *L) {
 		UNLOCK(&g_ctx_lock);
 		luaL_error(L, "[wordfilter.setmaskword]: filter no created,filter id:[%d]",
 						filter_id);
-		return 0;
 	}
 	ctx->ignorecase = ignorecase;
 
@@ -603,12 +586,10 @@ lupdateskipword(lua_State *L) {
 	if (filter_id < 1 || filter_id > MAX_FILTER_NUM) {
 		luaL_error(L, "[wordfilter.updateskipword]: filter id overstep the boundary:[%d]",
 						filter_id);		
-		return 0;
 	}
 	if (!lua_istable(L, 2)) {
 		luaL_error(L, "[wordfilter.updateskipword]: table expect, got type[%s]",
 						lua_typename(L, lua_type(L, 2)));
-		return 0;
 	}
 
 	LOCK(&g_ctx_lock);
@@ -617,7 +598,6 @@ lupdateskipword(lua_State *L) {
 		UNLOCK(&g_ctx_lock);
 		luaL_error(L, "[wordfilter.updateskipword]: filter no created,filter id:[%d]",
 						filter_id);
-		return 0;
 	}
 
 	int success = 1;
@@ -626,9 +606,9 @@ lupdateskipword(lua_State *L) {
 		const char* word = lua_tostring(L, -1);
 		if (!insert_skip_word(ctx, word)) {
 			success = 0;
+			UNLOCK(&g_ctx_lock);
 			luaL_error(L, "[wordfilter.updateskipword]: insert word error[%s]",
 							word);
-			break;
 		}
 
 		lua_pop(L, 1);
@@ -645,13 +625,11 @@ lupdateword(lua_State *L) {
 	if (filter_id < 1 || filter_id > MAX_FILTER_NUM) {
 		luaL_error(L, "[wordfilter.updateword]: filter id overstep the boundary:[%d]",
 						filter_id);
-		return 0;
 	}
 
 	if (!lua_istable(L, 2)) {
 		luaL_error(L, "[wordfilter.updateword]: table expect, got type[%s]",
 						lua_typename(L, lua_type(L, 2)));
-		return 0;
 	}
 
 	LOCK(&g_ctx_lock);
@@ -660,7 +638,6 @@ lupdateword(lua_State *L) {
 		UNLOCK(&g_ctx_lock);
 		luaL_error(L, "[wordfilter.updateword]: filter no created,filter id:[%d]",
 						filter_id);
-		return 0;
 	}
 
 	int success = 1;
@@ -670,14 +647,13 @@ lupdateword(lua_State *L) {
 			UNLOCK(&g_ctx_lock);
 			luaL_error(L, "[wordfilter.updateword]: string expect, got type[%s]",
 							lua_typename(L, lua_type(L, -1)));
-			return 0;
 		}
 		const char* word = lua_tostring(L, -1);
 		if (!insert_word(ctx, word)) {
 			success = 0;
+			UNLOCK(&g_ctx_lock);
 			luaL_error(L, "[wordfilter.updateword]: insert word error[%s]",
 							word);
-			break;
 		}
 		lua_pop(L, 1);
 	}
@@ -693,12 +669,10 @@ lfilter(lua_State *L) {
 	if (filter_id < 1 || filter_id > MAX_FILTER_NUM) {
 		luaL_error(L, "[wordfilter.filter]: filter id overstep the boundary:[%d]",
 						filter_id);
-		return 0;
 	}
 	if (lua_type(L, 2) != LUA_TSTRING) {
 		luaL_error(L, "[wordfilter.filter]: string expect, got type:[%s]",
 						lua_typename(L, lua_type(L, 2)));
-		return 0;
 	}
 
 	LOCK(&g_ctx_lock);
@@ -707,16 +681,25 @@ lfilter(lua_State *L) {
 		UNLOCK(&g_ctx_lock);
 		luaL_error(L, "[wordfilter.filter]: filter no created,filter id:[%d]",
 						filter_id);
-		return 0;
 	}
-	const char* word = lua_tostring(L, 2);
+
+	size_t str_len;
+	const char* word = lua_tolstring(L, 2, &str_len);
+	if (word == NULL) {
+		UNLOCK(&g_ctx_lock);
+		lua_pushboolean(L, 0);
+		return 1;
+	}
+
+	char wordstartptr[str_len+1];
 	strnodeptr strlist = NULL;
-	int isfilter = 0;
-	char* newstr = filter_word(ctx, word, &strlist, &isfilter);
+
+	memset(wordstartptr, 0, (str_len+1)*sizeof(char));
+	int isfilter = filter_word(ctx, word, &strlist, wordstartptr);
 	UNLOCK(&g_ctx_lock);
 
 	lua_pushboolean(L, isfilter);
-	lua_pushstring(L, newstr);
+	lua_pushstring(L, wordstartptr);
 	lua_newtable(L);
 	strnodeptr p = strlist;
 	int i = 1;
@@ -725,7 +708,6 @@ lfilter(lua_State *L) {
 		lua_rawseti(L, -2, i++);
 		p = p->next;
 	}
-	if (newstr) word_filter_free(newstr, strlen(word)+1);
 	if (strlist) free_str_list(strlist);
 	return 3;
 }
@@ -736,12 +718,10 @@ lcheck(lua_State *L) {
 	if (filter_id < 1 || filter_id > MAX_FILTER_NUM) {
 		luaL_error(L, "[wordfilter.check]: filter id overstep the boundary:[%d]",
 						filter_id);
-		return 0;
 	}
 	if (lua_type(L, 2) != LUA_TSTRING) {
 		luaL_error(L, "[wordfilter.check]: string expect, got type:[%s]",
 						lua_typename(L, lua_type(L, 2)));
-		return 0;
 	}
 
 	LOCK(&g_ctx_lock);
@@ -750,10 +730,15 @@ lcheck(lua_State *L) {
 		UNLOCK(&g_ctx_lock);
 		luaL_error(L, "[wordfilter.check]: filter no created,filter id:[%d]",
 						filter_id);
-		return 0;
 	}
 
 	const char* word = lua_tostring(L, 2);
+	if (word == NULL) {
+		UNLOCK(&g_ctx_lock);
+		lua_pushboolean(L, 0);
+		return 1;
+	}
+
 	strnodeptr strlist = NULL;
 	int find = search_word_ex(ctx, word, &strlist);
 	UNLOCK(&g_ctx_lock);
@@ -771,7 +756,31 @@ lcheck(lua_State *L) {
 	return 2;
 }
 
-int lmemory(lua_State *L) {
+int
+lempty(lua_State *L) {
+	int filter_id = lua_tointeger(L, 1);
+	if (filter_id < 1 || filter_id > MAX_FILTER_NUM) {
+		lua_pushboolean(L, 0);
+		return 1;
+	}
+
+	LOCK(&g_ctx_lock);
+	wordfilterctxptr ctx = g_ctx_instance[filter_id-1];
+	if (!ctx) {
+		UNLOCK(&g_ctx_lock);
+		lua_pushboolean(L, 0);
+		return 1;
+	}
+
+	int empty = (ctx->word_root->nchildren == 0);
+	UNLOCK(&g_ctx_lock);
+
+	lua_pushboolean(L, empty);
+	return 1;
+}
+
+int
+lmemory(lua_State *L) {
 	lua_pushinteger(L, g_memsize);
 	return 1;
 }
@@ -789,6 +798,7 @@ luaopen_wordfilter(lua_State *L) {
 		{"updateword",     lupdateword},
 	  	{"filter", 	       lfilter},
 	  	{"check",          lcheck},
+	  	{"empty",          lempty},
 	  	{"memory",         lmemory},
 	  	{NULL, NULL}
 	};
