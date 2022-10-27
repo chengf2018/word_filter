@@ -217,35 +217,30 @@ static inline int
 skip_word(trieptr word_root, const char** str, int ignorecase) {
 	if (!str) return 0;
 	char c;
-	int skipnum = 0;
 	const char* wordptr = *str;
 
-	while (1) {
-		trieptr node = word_root;
-		byte pos_index = 0;
-		int find = 0;
-		while ((c = *wordptr)) {
-			if (ignorecase) c = wf_tolower(c);
-			int exist = 0;
-			byte index = binary_search(node, c, &exist);
-			if (!exist) break;
+	trieptr node = word_root;
+	int pos_index = 0;
+	int find = 0;
+	while ((c = *wordptr)) {
+		if (ignorecase) c = wf_tolower(c);
+		int exist = 0;
+		byte index = binary_search(node, c, &exist);
+		if (!exist) break;
 
-			pos_index++;
-			node = &node->children[index];
+		pos_index++;
+		node = &node->children[index];
 
-			if (node->isword) {
-				find = pos_index;
-			}
-			wordptr++;
+		if (node->isword) {
+			find = pos_index;
 		}
-		if (find) skipnum += find;
-		else break;
+		wordptr++;
 	}
 
-	if (skipnum)
-		*str += skipnum;
+	if (find)
+		*str += find;
 
-	return skipnum;
+	return find;
 }
 
 static int
@@ -276,38 +271,43 @@ do_insert_word(wordfilterctxptr ctx, trieptr root, const char* word) {
 }
 
 static int
-do_search_word(wordfilterctxptr ctx, trieptr word_root, trieptr skip_word_root, const char* word, char** word_key) {
+do_search_word(wordfilterctxptr ctx, trieptr word_root, trieptr skip_word_root, const char* word, char* word_key) {
 	char c;
 	int ignorecase = ctx->ignorecase;
 	int find = 0;
-	char trie_stack[MAX_WORD_LENGTH + 1] = { 0 };
-	byte trie_stack_index = 0;
+	byte word_key_index = 0;
 	trieptr node = word_root;
 	const char* wordptr = word;
 	int skip_num = 0;
 	int exist = 0;
-	int last_skip = 0;
 	byte index = 0;
 
 	while ((c = *wordptr)) {
 		if (ignorecase) c = wf_tolower(c);
 		exist = 0;
 		index = binary_search(node, c, &exist);
-		if (!exist) break;
-		skip_num += last_skip;
-		trie_stack[trie_stack_index++] = c;
+		if (!exist) {
+			//word not existed, try skip word
+			if (word_key_index > 0) {
+				int skip = skip_word(skip_word_root, &wordptr, ignorecase);
+				if (skip) {
+					skip_num += skip;
+					continue;
+				}
+			}
+			break;
+		}
+
+		if (word_key) {
+			word_key[word_key_index] = *wordptr;
+		}
+		word_key_index++;
 		node = &node->children[index];
 
 		if (node->isword) {
-			find = trie_stack_index;
+			find = word_key_index;
 		}
 		wordptr++;
-		last_skip = skip_word(skip_word_root, &wordptr, ignorecase);
-	}
-
-	if (find && word_key) {
-		trie_stack[find] = '\0';
-		*word_key = copy_string(trie_stack);
 	}
 
 	return find ? (find + skip_num) : 0;
@@ -359,7 +359,7 @@ void wf_free_ctx(wordfilterctxptr ctx) {
 }
 
 int
-wf_search_word(wordfilterctxptr ctx, const char* word, char** word_key) {
+wf_search_word(wordfilterctxptr ctx, const char* word, char* word_key) {
 	return do_search_word(ctx, ctx->word_root, ctx->skip_word_root, word, word_key);
 }
 
@@ -369,21 +369,17 @@ wf_search_word_ex(wordfilterctxptr ctx, const char* word, strnodeptr* strlist) {
 	int find = 0;
 	strnodeptr strnode = NULL;
 	while (*wordptr) {
-		char* string = NULL;
-		int ret = strlist ? wf_search_word(ctx, wordptr, &string)
+		char string[MAX_WORD_LENGTH + 1] = {0};
+		int ret = strlist ? wf_search_word(ctx, wordptr, string)
 			: wf_search_word(ctx, wordptr, NULL);
 		if (ret) {
 			find = 1;
 			wordptr += ret;
+			if (strlist && !search_strnode(strnode, string))
+				strnode = insert_str(strnode, string);
 		}
 		else {
 			wordptr++;
-		}
-
-		if (string) {
-			if (strlist && !search_strnode(strnode, string))
-				strnode = insert_str(strnode, string);
-			wf_free(string, strlen(string) + 1);
 		}
 	}
 	if (strlist) {
@@ -401,36 +397,34 @@ wf_filter_word(wordfilterctxptr ctx, const char* word, strnodeptr* strlist, char
 
 	strnodeptr strnode = NULL;
 	while (*wordptr) {
-		char* string = NULL;
-		int ret = strlist ? wf_search_word(ctx, wordptr, &string)
+		char string[MAX_WORD_LENGTH + 1] = {0};
+		int ret = strlist ? wf_search_word(ctx, wordptr, string)
 			: wf_search_word(ctx, wordptr, NULL);
 		if (ret) {
 			find = 1;
-			for (int i = 0; i < ret; i++) {
+			int stringindex = 0, i = 0;
+			while (i < ret) {
 				char c = *(wordptr + i);
-				if (c & 0x80) {
-					//utf8 code
-					int skip = 1;
-					for (int j = 0; j < 3; j++) {
-						if (c & (0x40 >> j)) {
-							skip++;
-						}
-						else break;
-					}
-					i += skip;
+				if (string[stringindex] != c) {
+					outstr[strpos++] = c;
+					i++;
+					continue;
 				}
+				int j = 0;
+				while (c & (0x80>>j) && j < 4) j++; //utf8 code
+				j = j ? j : 1;
+				i += j;
+				stringindex += j;
 				outstr[strpos++] = mask_word;
 			}
 			wordptr += ret;
+
+			if (strlist && !search_strnode(strnode, string))
+				strnode = insert_str(strnode, string);
 		}
 		else {
 			outstr[strpos++] = *wordptr;
 			wordptr++;
-		}
-		if (string) {
-			if (strlist && !search_strnode(strnode, string))
-				strnode = insert_str(strnode, string);
-			wf_free(string, strlen(string) + 1);
 		}
 	}
 

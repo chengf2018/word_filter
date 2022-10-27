@@ -39,7 +39,7 @@ void wf_free_ctx(wordfilterctxptr ctx);
 int wf_insert_word(wordfilterctxptr ctx, const char* word);
 int wf_insert_skip_word(wordfilterctxptr ctx, const char* word);
 int wf_search_word(wordfilterctxptr ctx, const char* word, 
-	char** word_key);
+	char* word_key);
 int wf_search_word_ex(wordfilterctxptr ctx, const char* word, 
 	strnodeptr* strlist);
 int wf_filter_word(wordfilterctxptr ctx, const char* word, 
