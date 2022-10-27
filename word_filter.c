@@ -332,7 +332,7 @@ wf_create_ctx() {
 	ctx->ignorecase = 0;
 	ctx->word_root = create_trie();
 	ctx->skip_word_root = create_trie();
-	ctx->mask_word = '*';
+	ctx->mask_word = '*';//default mask word
 	return ctx;
 }
 
@@ -370,8 +370,7 @@ wf_search_word_ex(wordfilterctxptr ctx, const char* word, strnodeptr* strlist) {
 	strnodeptr strnode = NULL;
 	while (*wordptr) {
 		char string[MAX_WORD_LENGTH + 1] = {0};
-		int ret = strlist ? wf_search_word(ctx, wordptr, string)
-			: wf_search_word(ctx, wordptr, NULL);
+		int ret = wf_search_word(ctx, wordptr, string);
 		if (ret) {
 			find = 1;
 			wordptr += ret;
@@ -398,8 +397,7 @@ wf_filter_word(wordfilterctxptr ctx, const char* word, strnodeptr* strlist, char
 	strnodeptr strnode = NULL;
 	while (*wordptr) {
 		char string[MAX_WORD_LENGTH + 1] = {0};
-		int ret = strlist ? wf_search_word(ctx, wordptr, string)
-			: wf_search_word(ctx, wordptr, NULL);
+		int ret = wf_search_word(ctx, wordptr, string);
 		if (ret) {
 			find = 1;
 			int stringindex = 0, i = 0;
