@@ -275,7 +275,7 @@ do_search_word(wordfilterctxptr ctx, trieptr word_root, trieptr skip_word_root, 
 	char c;
 	int ignorecase = ctx->ignorecase;
 	int find = 0;
-	byte word_key_index = 0;
+	int word_key_index = 0;
 	trieptr node = word_root;
 	const char* wordptr = word;
 	int skip_num = 0;
