@@ -4,7 +4,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
-#include "rwlock.h"
 
 #define MAX_TRIE_SIZE 0xFF
 #define MAX_WORD_LENGTH 0xFF //屏蔽字的大小限制
@@ -12,11 +11,6 @@
 
 #define LOCK(pl) while (__sync_lock_test_and_set(pl,1)) {};
 #define UNLOCK(pl) __sync_lock_release(pl);
-#define RWLOCKINIT(pl) rwlock_init(pl);
-#define RLOCK(pl) rwlock_rlock(pl);
-#define RUNLOCK(pl) rwlock_runlock(pl);
-#define WLOCK(pl) rwlock_wlock(pl);
-#define WUNLOCK(pl) rwlock_wunlock(pl);
 
 typedef int lock;
 typedef unsigned char byte;
