@@ -17,7 +17,7 @@
  * connection with the software or the use or other dealings in the Software.
  */
 //author:chengf2018
-//update date:2022-07-27
+//update date:2023-07-25
 //License:MIT
 
 #include "word_filter.h"
@@ -26,6 +26,31 @@
 #define MAX_TRIE_SIZE 0xFF
 #define MAX_WORD_LENGTH 0xFF //word length limit
 #define MAX_FILTER_NUM 10
+#define MAX_INDEX 0xFFFFF
+
+#define twoto(x) (1<<(x))
+static uint32_t
+ceil_log2(uint32_t x) {
+	int i = 0;
+	while (x) {x=x>>1; ++i;}
+	return i;
+}
+
+#define trie_get_data(n)               ( (n)->data & 0xFF )
+#define trie_get_isword(n)             ( ((n)->data & 0x100) >> 8 )
+#define trie_get_capacity_pool(n)      ( (((n)->data & 0xE00) >> 9))
+#define trie_get_capacity(n)           ( twoto(trie_get_capacity_pool(n)+1) - 1 )
+#define trie_get_children_index(n)     ( ((n)->data & 0xFFFFF000) >> 12 )
+#define trie_get_children(pool, node)  pool_get_trie((pool), trie_get_capacity_pool(node), trie_get_children_index(node))
+
+#define trie_set_data(n, v)            ( (n)->data = ((n)->data & 0xFFFFFF00) | ((v) & 0xFF) )
+#define trie_set_isword(n, v)          ( (n)->data = ((n)->data & 0xFFFFFEFF) | (((v) & 0x1) << 8) )
+#define trie_set_rawcapacity(n, v)     ( (n)->data = ((n)->data & 0xFFFFF1FF) | (((v) & 0x7) << 9) )
+#define trie_set_capacity(n, v)        trie_set_rawcapacity( n, ceil_log2((v))-1 ) /*v:1~255*/
+#define trie_set_children_index(n, v)  ( (n)->data = ((n)->data & 0x00000FFF) | (((v) & 0xFFFFF) << 12) )
+
+#define get_pool_unit_size(pool_index) ( sizeof(struct _trie)*(twoto(pool_index+1)-1) )/*pool_index:0~7*/
+
 
 static size_t g_memsize = 0;
 
@@ -79,29 +104,87 @@ copy_string(const char* str) {
 	return newstr;
 }
 
-static inline trieptr
-create_trie() {
-	trieptr newtrie = (trieptr)wf_malloc(sizeof(*newtrie));
-	memset(newtrie, 0, sizeof(*newtrie));
-	newtrie->capacity = 1;
-	newtrie->children = (trieptr)wf_malloc(sizeof(*newtrie));
-	memset(newtrie->children, 0, sizeof(*newtrie));
-	return newtrie;
+static void
+pool_init(struct _trie_pool pool[8]) {
+	static uint32_t pool_init_size[8] = {1,1,1,1,1,1,0,0};
+	int i;
+	for (i=0; i<8; i++) {
+		pool[i].freelist = NULL;
+		pool[i].pool = NULL;
+		pool[i].pool_size = pool_init_size[i];
+		if (pool[i].pool_size > 0) {
+			size_t size = pool->pool_size * get_pool_unit_size(i);
+			pool[i].pool = (trieptr)wf_malloc(size);
+			memset(pool[i].pool, 0, size);
+		}
+	}
 }
 
-static inline void
-free_node(trieptr node) {
-	if (node && node->children) {
-		for (int i = 0; i < node->capacity; i++) {
-			trieptr childnode = &node->children[i];
-			if (childnode->children)
-				free_node(childnode);
+static void
+pool_deinit(struct _trie_pool pool[8]) {
+	int i;
+	for (i=0; i<8; i++) {
+		struct _trie_pool_free_node* freenode = pool[i].freelist;
+		while (freenode) {
+			struct _trie_pool_free_node* next = freenode->next;
+			wf_free(freenode, sizeof(*freenode));
+			freenode = next;
 		}
-		wf_free(node->children, node->capacity * sizeof(*node->children));
-		node->children = NULL;
-		node->capacity = 0;
-		node->nchildren = 0;
+		if (pool[i].pool)
+			wf_free(pool[i].pool, pool[i].pool_size * get_pool_unit_size(i));
 	}
+}
+
+//return user index(>0)
+static uint32_t
+pool_alloc(struct _trie_pool pool[8], uint32_t pool_index) {
+	static uint32_t pool_enlarge_size[8] = {8,4,2,1,1,1,1,1};
+	struct _trie_pool* mypool = &pool[pool_index];
+
+	assert(mypool->pool_tail <= MAX_INDEX);
+
+	//先检测freelist是否有空闲空间，否则才用pool尾部的空闲空间，如果pool尾部也没有空间了，才扩充pool_size
+	if (mypool->freelist) {
+		uint32_t free_index = mypool->freelist->index;
+		struct _trie_pool_free_node* next = mypool->freelist->next;
+		wf_free(mypool->freelist, sizeof(*mypool->freelist));
+		mypool->freelist = next;
+		return free_index+1;
+	}
+
+	if (mypool->pool_tail >= mypool->pool_size) {
+		uint32_t oldsize = mypool->pool_size;
+		uint32_t unitsize = get_pool_unit_size(pool_index);
+		mypool->pool_size = oldsize + pool_enlarge_size[pool_index];
+		mypool->pool = (trieptr)wf_realloc(mypool->pool, mypool->pool_size * unitsize, oldsize * unitsize);
+		
+		memset(mypool->pool + oldsize * (twoto(pool_index+1)-1), 0, (mypool->pool_size - oldsize) * unitsize);
+	}
+
+	return ++mypool->pool_tail;
+}
+
+static void
+pool_free(struct _trie_pool pool[8], uint32_t pool_index, uint32_t free_index) {
+	struct _trie_pool* mypool = &pool[pool_index];
+	if (free_index == 0) return;
+	free_index--;
+	if (free_index > 0 && free_index == mypool->pool_tail-1) {
+		mypool->pool_tail--;
+		return;
+	}
+	struct _trie_pool_free_node* freenode = (struct _trie_pool_free_node*)wf_malloc(sizeof(*freenode));
+	freenode->index = free_index;
+	freenode->next = mypool->freelist;
+	mypool->freelist = freenode;
+}
+
+static inline trieptr
+pool_get_trie(struct _trie_pool pool[8], uint32_t pool_index, uint32_t index) {
+	struct _trie_pool* mypool = &pool[pool_index];
+	if (mypool->pool == NULL || index == 0) return NULL;
+	index--;
+	return &mypool->pool[index * (twoto(pool_index+1)-1)];
 }
 
 static inline strnodeptr
@@ -142,63 +225,97 @@ calcinitsize(byte addsize) {
 }
 
 static int
-reserve(trieptr node, byte addsize) {
-	if (node->capacity == MAX_TRIE_SIZE) return 1;
-	addsize = addsize ? addsize : 1;
-	if (!node->children) {
-		byte newcapacity = calcinitsize(addsize);
-		trieptr newchildren = (trieptr)wf_malloc(sizeof(*node->children) * newcapacity);
-		if (!newchildren) return 0;
-		node->capacity = newcapacity;
-		node->children = newchildren;
-		memset(node->children, 0, sizeof(*node->children) * node->capacity);
+reserve(wordfilterctxptr ctx, trieptr* node, struct _trie_node_index node_index) {
+	byte capacity = trie_get_capacity(*node);
+	trieptr children = trie_get_children(ctx->pool, *node);
+
+	if (capacity == MAX_TRIE_SIZE){
 		return 1;
 	}
-	if (node->nchildren + 1 > node->capacity) {
-		byte oldsize = node->capacity;
-		byte newcapacity = (node->capacity << 1) + 1;
-		trieptr newchildren = (trieptr)wf_realloc(node->children,
-			sizeof(*node->children) * newcapacity,
-			sizeof(*node->children) * oldsize);
-		if (!newchildren) return 0;
-		node->capacity = newcapacity;
-		node->children = newchildren;
-		memset(&node->children[oldsize], 0,
-			sizeof(*node->children) * (newcapacity - oldsize));
+
+//重新分配后，node指向的地址可能失效，需要进行重新修正
+
+	if (!children) {
+		byte newcapacity = 1;
+		uint32_t index = pool_alloc(ctx->pool, 0);
+		if (!index) return 0;
+		if (node_index.pool_index == 0 && node_index.index)
+			*node = pool_get_trie(ctx->pool, node_index.pool_index, node_index.index) + node_index.children_index;
+
+		trie_set_capacity(*node, newcapacity);
+		trie_set_children_index(*node, index);
+
+		children = trie_get_children(ctx->pool, *node);
+		children[0].data = 0;
+		return 1;
+	}
+	
+	byte data = trie_get_data(&children[capacity-1]);
+	if (data != 0) { //如果最后一个数据不为0，说明已经用完
+		byte oldcapacity = capacity;
+		byte newcapacity = (capacity << 1) + 1;
+		struct _trie_node_index oldclildren_index = { trie_get_capacity_pool(*node), trie_get_children_index(*node), 0 };
+		uint32_t pool_index = ceil_log2(newcapacity)-1;
+		uint32_t index = pool_alloc(ctx->pool, pool_index);
+		if (!index) return 0;
+		if (node_index.pool_index == pool_index && node_index.index)
+			*node = pool_get_trie(ctx->pool, node_index.pool_index, node_index.index) + node_index.children_index;
+
+		trie_set_capacity(*node, newcapacity);
+		trie_set_children_index(*node, index);
+
+		trieptr newchildren = trie_get_children(ctx->pool, *node);
+		int i;
+		for (i=0; i<oldcapacity; i++) {
+			newchildren[i] = children[i];
+		}
+		for (i=oldcapacity; i<newcapacity; i++) {
+			newchildren[i].data = 0;
+		}
+
+		pool_free(ctx->pool, oldclildren_index.pool_index, oldclildren_index.index);
 	}
 	return 1;
 }
 
 static trieptr
-add_trie(trieptr node, byte index, byte c, byte isword) {
-	if (!reserve(node, 1)) return NULL;
+add_trie(wordfilterctxptr ctx, trieptr* node, byte index, byte c, byte isword, struct _trie_node_index node_index) {
+	if (!reserve(ctx, node, node_index)) return NULL;
 
-	int movesize = node->nchildren - index;
-	if (movesize > 0) {
-		memmove(&node->children[index + 1], &node->children[index], \
-			movesize * sizeof(struct _trie));
+	trieptr children = trie_get_children(ctx->pool, *node);
+	byte capacity = trie_get_capacity(*node);
+	assert(index <= capacity);
+
+	byte i = index;
+	struct _trie last = children[i];
+	while (trie_get_data(&last) != 0 && i+1 < capacity) {
+		struct _trie temp = children[i+1];
+		children[i+1]=last;
+		last = temp; i++;
 	}
-	trieptr newnode = &node->children[index];
-	memset((void*)newnode, 0, sizeof(*newnode));
-	newnode->data = c;
-	newnode->isword = isword;
-	node->nchildren++;
 
+	trieptr newnode = &children[index];
+	memset(newnode, 0, sizeof(*newnode));
+	trie_set_data(newnode, c);
+	trie_set_isword(newnode, isword);
+	//trie_set_children_index(newnode, 0);
 	return newnode;
 }
 
 static byte
-binary_search(trieptr node, byte c, int* exist) {
-	if (node->nchildren == 0) {
+binary_search(wordfilterctxptr ctx, trieptr node, byte c, int* exist) {
+	trieptr children = trie_get_children(ctx->pool, node);
+	if (children == NULL) {
 		if (exist) *exist = 0;
 		return 0;
 	}
-	int l = 0, r = node->nchildren - 1;
+	byte capacity = trie_get_capacity(node);
+	int l = 0, r = capacity - 1;
 
 	while (l <= r) {
 		byte middle = (l + r) >> 1;
-		byte data = node->children[middle].data;
-		if (data > c) {
+		byte data = trie_get_data(&children[middle]);
+		if (data == 0 || data > c) {
 			r = middle - 1;
 		}
 		else if (data == c) {
@@ -214,33 +331,33 @@ binary_search(trieptr node, byte c, int* exist) {
 }
 
 static inline int
-skip_word(trieptr word_root, const char** str, int ignorecase) {
+skip_word(wordfilterctxptr ctx, trieptr word_root, const char** str, int ignorecase) {
 	if (!str) return 0;
 	char c;
 	const char* wordptr = *str;
-
 	trieptr node = word_root;
 	int pos_index = 0;
-	int find = 0;
+	int find_pos = 0;
 	while ((c = *wordptr)) {
 		if (ignorecase) c = wf_tolower(c);
 		int exist = 0;
-		byte index = binary_search(node, c, &exist);
+		byte index = binary_search(ctx, node, c, &exist);
 		if (!exist) break;
 
 		pos_index++;
-		node = &node->children[index];
+		trieptr children = trie_get_children(ctx->pool, node);
+		node = &children[index];
 
-		if (node->isword) {
-			find = pos_index;
+		if (trie_get_isword(node)) {
+			find_pos = pos_index;
 		}
 		wordptr++;
 	}
 
-	if (find)
-		*str += find;
+	if (find_pos)
+		*str += find_pos;
 
-	return find;
+	return find_pos;
 }
 
 static int
@@ -250,19 +367,23 @@ do_insert_word(wordfilterctxptr ctx, trieptr root, const char* word) {
 	const char* wordptr = word;
 	char c;
 	trieptr node = root;
+	struct _trie_node_index node_index = {0,0,0};
 	while ((c = *wordptr)) {
 		if (ctx->ignorecase) c = wf_tolower(c);
 		int exist = 0;
-		byte index = binary_search(node, c, &exist);
+		byte index = binary_search(ctx, node, c, &exist);
 		byte isword = *(wordptr + 1) == '\0';
 		if (exist) {
-			node = &node->children[index];
-			if (isword)
-				node->isword = 1;
-		}
-		else {
-			trieptr newnode = add_trie(node, index, c, isword);
+			trieptr children = trie_get_children(ctx->pool, node);
+			node_index = (struct _trie_node_index){trie_get_capacity_pool(node), trie_get_children_index(node), index};
+			node = &children[index];
+			if (isword) {
+				trie_set_isword(node, 1);
+			}
+		} else {
+			trieptr newnode = add_trie(ctx, &node, index, c, isword, node_index);
 			if (!newnode) return 0;
+			node_index = (struct _trie_node_index){trie_get_capacity_pool(node), trie_get_children_index(node), index};
 			node = newnode;
 		}
 		wordptr++;
@@ -285,42 +406,42 @@ do_search_word(wordfilterctxptr ctx, trieptr word_root, trieptr skip_word_root, 
 	while ((c = *wordptr)) {
 		if (ignorecase) c = wf_tolower(c);
 		exist = 0;
-		index = binary_search(node, c, &exist);
+		index = binary_search(ctx, node, c, &exist);
 		if (!exist) {
 			//word not existed, try skip word
 			if (word_key_index > 0) {
-				int skip = skip_word(skip_word_root, &wordptr, ignorecase);
+				int skip = skip_word(ctx, skip_word_root, &wordptr, ignorecase);
 				if (skip) {
 					skip_num += skip;
 					continue;
 				}
 			}
+			
 			break;
 		}
-
 		if (word_key) {
 			word_key[word_key_index] = *wordptr;
 		}
 		word_key_index++;
-		node = &node->children[index];
+		trieptr children = trie_get_children(ctx->pool, node);
+		node = &children[index];
 
-		if (node->isword) {
+		if (trie_get_isword(node)) {
 			find = word_key_index;
 		}
 		wordptr++;
 	}
-
 	return find ? (find + skip_num) : 0;
 }
 
 int
 wf_insert_word(wordfilterctxptr ctx, const char* word) {
-	return do_insert_word(ctx, ctx->word_root, word);
+	return do_insert_word(ctx, &ctx->word_root, word);
 }
 
 int
 wf_insert_skip_word(wordfilterctxptr ctx, const char* word) {
-	return do_insert_word(ctx, ctx->skip_word_root, word);
+	return do_insert_word(ctx, &ctx->skip_word_root, word);
 }
 
 wordfilterctxptr
@@ -329,38 +450,32 @@ wf_create_ctx() {
 	if (!ctx) return NULL;
 
 	memset(ctx, 0, sizeof(*ctx));
-	ctx->ignorecase = 0;
-	ctx->word_root = create_trie();
-	ctx->skip_word_root = create_trie();
-	ctx->mask_word = '*';//default mask word
+	pool_init(ctx->pool);
+
+	ctx->mask_word = '*';
 	return ctx;
 }
 
 void
 wf_clean_ctx(wordfilterctxptr ctx) {
 	if (!ctx) return;
-	if (ctx->word_root) {
-		free_node(ctx->word_root);
-	}
-	if (ctx->skip_word_root) {
-		free_node(ctx->skip_word_root);
-	}
+	pool_deinit(ctx->pool);
+
+	memset(ctx, 0, sizeof(*ctx));
+	pool_init(ctx->pool);
+	ctx->mask_word = '*';
 }
 
 void wf_free_ctx(wordfilterctxptr ctx) {
-	wf_clean_ctx(ctx);
-	if (ctx->word_root) {
-		wf_free(ctx->word_root, sizeof(*ctx->word_root));
-	}
-	if (ctx->skip_word_root) {
-		wf_free(ctx->skip_word_root, sizeof(*ctx->skip_word_root));
-	}
+	if (!ctx) return;
+
+	pool_deinit(ctx->pool);
 	wf_free(ctx, sizeof(*ctx));
 }
 
 int
 wf_search_word(wordfilterctxptr ctx, const char* word, char* word_key) {
-	return do_search_word(ctx, ctx->word_root, ctx->skip_word_root, word, word_key);
+	return do_search_word(ctx, &ctx->word_root, &ctx->skip_word_root, word, word_key);
 }
 
 int
@@ -372,7 +487,7 @@ wf_search_word_ex(wordfilterctxptr ctx, const char* word, strnodeptr* strlist) {
 		char string[MAX_WORD_LENGTH + 1] = {0};
 		int ret = wf_search_word(ctx, wordptr, string);
 		if (ret) {
-			find = 1;
+			find = 1; 
 			wordptr += ret;
 			if (strlist && !search_strnode(strnode, string))
 				strnode = insert_str(strnode, string);

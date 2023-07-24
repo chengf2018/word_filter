@@ -3,16 +3,32 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <stdint.h>
+#include <assert.h>
 
 typedef unsigned char byte;
 
 typedef struct _trie {
-	byte data;
-	byte nchildren;
-	byte capacity;
-	byte isword;
-	struct _trie* children;
+	uint32_t data;
 }*trieptr;
+
+struct _trie_pool_free_node {
+	struct _trie_pool_free_node *next;
+	uint32_t index;
+};
+
+struct _trie_node_index {
+	uint32_t pool_index;
+	uint32_t index;
+	byte children_index;
+};
+
+struct _trie_pool {
+	struct _trie_pool_free_node* freelist;
+	trieptr pool;
+	uint32_t pool_size;
+	uint32_t pool_tail;
+};
 
 typedef struct _str_node {
 	char* str;
@@ -20,10 +36,11 @@ typedef struct _str_node {
 }*strnodeptr;
 
 typedef struct _wordfilter_ctx {
+	struct _trie word_root;
+	struct _trie skip_word_root;
 	int ignorecase;
 	char mask_word;
-	trieptr word_root;
-	trieptr skip_word_root;
+	struct _trie_pool pool[8];
 }*wordfilterctxptr;
 
 size_t wf_get_memsize();
