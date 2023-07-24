@@ -551,7 +551,12 @@ lsetmaskword(lua_State *L) {
 		luaL_error(L, "[wordfilter.setmaskword]: filter id overstep the boundary:[%d]",
 						filter_id);		
 	}
-	int ignorecase = lua_tointeger(L, 2);
+	const char* maskword = lua_tostring(L, 2);
+	if (maskword == NULL || strlen(maskword) > 1) {
+		luaL_error(L, "[wordfilter.setmaskword]:maskword must be a character:[%d]",
+						filter_id);
+	}
+
 	LOCK(&g_ctx_lock);
 	wordfilterctxptr ctx = g_ctx_instance[filter_id-1];
 	if (!ctx) {
@@ -559,7 +564,7 @@ lsetmaskword(lua_State *L) {
 		luaL_error(L, "[wordfilter.setmaskword]: filter no created,filter id:[%d]",
 						filter_id);
 	}
-	ctx->ignorecase = ignorecase;
+	ctx->mask_word = maskword[0];
 
 	UNLOCK(&g_ctx_lock);
 	return 0;
