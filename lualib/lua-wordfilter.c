@@ -1,455 +1,49 @@
 #define _CRT_SECURE_NO_WARNINGS
 #include <lua.h>
 #include <lauxlib.h>
-#include <stdlib.h>
-#include <string.h>
-#include <stdio.h>
+#include <pthread.h>
+#include "word_filter.h"
 
-#define MAX_TRIE_SIZE 0xFF
-#define MAX_WORD_LENGTH 0xFF //屏蔽字的大小限制
 #define MAX_FILTER_NUM 10
 
 #define LOCK(pl) while (__sync_lock_test_and_set(pl,1)) {};
 #define UNLOCK(pl) __sync_lock_release(pl);
 
+
+struct rwlock {
+	pthread_rwlock_t lock;
+};
+
+static inline void
+rwlock_init(struct rwlock *lock) {
+	pthread_rwlock_init(&lock->lock, NULL);
+}
+
+static inline void
+rwlock_rlock(struct rwlock *lock) {
+	 pthread_rwlock_rdlock(&lock->lock);
+}
+
+static inline void
+rwlock_wlock(struct rwlock *lock) {
+	 pthread_rwlock_wrlock(&lock->lock);
+}
+
+static inline void
+rwlock_wunlock(struct rwlock *lock) {
+	pthread_rwlock_unlock(&lock->lock);
+}
+
+static inline void
+rwlock_runlock(struct rwlock *lock) {
+	pthread_rwlock_unlock(&lock->lock);
+}
+
+
 typedef int lock;
-typedef unsigned char byte;
-
-typedef struct _trie {
-	byte data;
-	byte nchildren;
-	byte capacity;
-	byte isword;
-	struct _trie *children;
-}*trieptr;
-
-typedef struct _str_node {
-	char* str;
-	struct _str_node* next;
-}*strnodeptr;
-
-typedef struct _wordfilter_ctx {
-	int ignorecase;
-	char mask_word;
-	trieptr word_root;
-	trieptr skip_word_root;
-}*wordfilterctxptr;
-
-static size_t g_memsize = 0;
-static wordfilterctxptr g_ctx_instance[MAX_FILTER_NUM] = {NULL};
 static lock g_ctx_lock;
-
-static inline void*
-word_filter_malloc(size_t size) {
-	g_memsize += size;
-	return malloc(size);
-}
-
-static inline void
-word_filter_free(void* p, size_t size) {
-	g_memsize -= size;
-	free(p);
-}
-
-static inline void*
-word_filter_realloc(void* p, size_t newsize, size_t oldsize) {
-	g_memsize += newsize;
-	g_memsize -= oldsize;
-	return realloc(p, newsize);
-}
-
-static inline char
-word_filter_tolower(char c) {
-	return (c >= 'A' && c <= 'Z') ? (c + 32) : c;
-}
-
-static inline char*
-copy_string(const char* str) {
-	size_t str_len = strlen(str);
-	char * newstr = word_filter_malloc((str_len + 1) * sizeof(char));
-	if (!newstr) return NULL;
-	strcpy(newstr, str);
-	newstr[str_len] = '\0';
-	return newstr;
-}
-
-static inline trieptr
-create_trie() {
-	trieptr newtrie = (trieptr)word_filter_malloc(sizeof(*newtrie));
-	memset(newtrie, 0, sizeof(*newtrie));
-	newtrie->capacity = 1;
-	newtrie->children = (trieptr)word_filter_malloc(sizeof(*newtrie));
-	memset(newtrie->children, 0, sizeof(*newtrie));
-	return newtrie;
-}
-
-static inline wordfilterctxptr
-create_word_filter_ctx() {
-	wordfilterctxptr ctx = (wordfilterctxptr)word_filter_malloc(sizeof(*ctx));
-	if (!ctx) return NULL;
-
-	memset(ctx, 0, sizeof(*ctx));
-	ctx->ignorecase = 0;
-	ctx->word_root = create_trie();
-	ctx->skip_word_root = create_trie();
-	ctx->mask_word = '*';
-	return ctx;
-}
-
-static inline void
-free_node(trieptr node) {
-	if (node && node->children) {
-		for (int i = 0; i < node->capacity; i++) {
-			trieptr childnode = &node->children[i];
-			if (childnode->children) 
-				free_node(childnode);
-		}
-		word_filter_free(node->children, node->capacity * sizeof(*node->children));
-		node->children = NULL;
-		node->capacity = 0;
-		node->nchildren = 0;
-	}
-}
-
-static inline strnodeptr
-insert_str(strnodeptr strnode, const char* str) {
-	if (strnode) {
-		strnodeptr newstrnode = (strnodeptr)word_filter_malloc(sizeof(*strnode));
-		if (!newstrnode) return NULL;
-		memset(newstrnode, 0, sizeof(*newstrnode));
-		newstrnode->str = copy_string(str);
-		newstrnode->next = strnode;
-		return newstrnode;
-	}
-	strnode = (strnodeptr)word_filter_malloc(sizeof(*strnode));
-	if (!strnode) return NULL;
-	memset(strnode, 0, sizeof(*strnode));
-	strnode->str = copy_string(str);
-	return strnode;
-}
-
-static inline const char*
-search_strnode(strnodeptr head, const char* str) {
-	if (!str) return NULL;
-	while (head) {
-		if (strcmp(head->str, str) == 0)
-			return head->str;
-		head = head->next;
-	}
-	return NULL;
-}
-
-static inline void
-free_str_list(strnodeptr strlist) {
-	strnodeptr node = strlist;
-	while (node) {
-		if (node->str)
-			word_filter_free(node->str, strlen(node->str) + 1);
-		strnodeptr prenode = node;
-		node = node->next;
-		word_filter_free(prenode, sizeof(*prenode));
-	}
-}
-
-static inline byte
-calcinitsize(byte addsize) {
-	for (int i = 1; i <= 8; i++) {
-		int size = (1 << i) - 1;
-		if (size >= addsize) return (byte)size;
-	}
-	return (byte)addsize;
-}
-
-static int
-reserve(trieptr node, byte addsize) {
-	if (node->capacity == MAX_TRIE_SIZE) return 1;
-	addsize = addsize ? addsize : 1;
-	if (!node->children) {
-		byte newcapacity = calcinitsize(addsize);
-		trieptr newchildren = (trieptr)word_filter_malloc(sizeof(*node->children) * newcapacity);
-		if (!newchildren) return 0;
-		node->capacity = newcapacity;
-		node->children = newchildren;
-		memset(node->children, 0, sizeof(*node->children) * node->capacity);
-		return 1;
-	}
-	if (node->nchildren + 1 > node->capacity) {
-		byte oldsize = node->capacity;
-		byte newcapacity = (node->capacity << 1) + 1;
-		trieptr newchildren = (trieptr)word_filter_realloc(node->children,
-									sizeof(*node->children) * newcapacity,
-									sizeof(*node->children) * oldsize);
-		if (!newchildren) return 0;
-		node->capacity = newcapacity;
-		node->children = newchildren;
-		memset(&node->children[oldsize], 0,
-			sizeof(*node->children) * (newcapacity - oldsize));
-	}
-	return 1;
-}
-
-static trieptr
-add_trie(trieptr node, byte index, byte c, byte isword) {
-	if (!reserve(node, 1)) return NULL;
-
-	int movesize = node->nchildren - index;
-	if (movesize > 0) {
-		memmove(&node->children[index+1], &node->children[index],\
-		 movesize * sizeof(struct _trie));
-	}
-	trieptr newnode = &node->children[index];
-	memset((void*)newnode, 0, sizeof(*newnode));
-	newnode->data = c;
-	newnode->isword = isword;
-	node->nchildren++;
-
-	return newnode;
-}
-
-static byte
-binary_search(trieptr node, byte c, int *exist) {
-	if (node->nchildren == 0) {
-		if (exist) *exist = 0;
-		return 0;
-	}
-	int l = 0, r = node->nchildren - 1;
-
-	while (l <= r) {
-		byte middle = (l + r) >> 1;
-		byte data = node->children[middle].data;
-		if (data > c) {
-			r = middle - 1;
-		}
-		else if (data == c) {
-			if (exist) *exist = 1;
-			l = middle;
-			break;
-		}
-		else {
-			l = middle + 1;
-		}
-	}
-	return l;
-}
-
-static inline int
-skip_word(trieptr word_root, const char** str, int ignorecase) {
-	if (!str) return 0;
-	char c;
-	const char* wordptr = *str;
-	trieptr node = word_root;
-	int pos_index = 0;
-	int find = 0;
-	while ((c = *wordptr)) {
-		if (ignorecase) c = word_filter_tolower(c);
-		int exist = 0;
-		byte index = binary_search(node, c, &exist);
-		if (!exist) break;
-
-		pos_index++;
-		node = &node->children[index];
-
-		if (node->isword) {
-			find = pos_index;
-		}
-		wordptr++;
-	}
-
-	if (find)
-		*str += find;
-
-	return find;
-}
-
-static int
-do_insert_word(wordfilterctxptr ctx, trieptr root, const char* word) {
-	if (strlen(word) > MAX_WORD_LENGTH) return 0;
-
-	const char* wordptr = word;
-	char c;
-	trieptr node = root;
-	while ((c = *wordptr)) {
-		if (ctx->ignorecase) c = word_filter_tolower(c);
-		int exist = 0;
-		byte index = binary_search(node, c, &exist);
-		byte isword = *(wordptr + 1) == '\0';
-		if (exist) {
-			node = &node->children[index];
-			if (isword)
-				node->isword = 1;
-		}
-		else {
-			trieptr newnode = add_trie(node, index, c, isword);
-			if (!newnode) return 0;
-			node = newnode;
-		}
-		wordptr++;
-	}
-	return 1;
-}
-
-static int
-do_search_word(wordfilterctxptr ctx, trieptr word_root, trieptr skip_word_root, const char* word, char* word_key) {
-	char c;
-	int ignorecase = ctx->ignorecase;
-	int find = 0;
-	int word_key_index = 0;
-	trieptr node = word_root;
-	const char* wordptr = word;
-	int skip_num = 0;
-	int exist = 0;
-	byte index = 0;
-
-	while ((c = *wordptr)) {
-		if (ignorecase) c = word_filter_tolower(c);
-		exist = 0;
-		index = binary_search(node, c, &exist);
-		if (!exist) {
-			//word not existed, try skip word
-			if (word_key_index > 0) {
-				int skip = skip_word(skip_word_root, &wordptr, ignorecase);
-				if (skip) {
-					skip_num += skip;
-					continue;
-				}
-			}
-			
-			break;
-		}
-		if (word_key) {
-			word_key[word_key_index] = *wordptr;
-		}
-		word_key_index++;
-		node = &node->children[index];
-
-		if (node->isword) {
-			find = word_key_index;
-		}
-		wordptr++;
-	}
-	return find ? (find + skip_num) : 0;
-}
-
-int
-insert_word(wordfilterctxptr ctx, const char* word) {
-	return do_insert_word(ctx, ctx->word_root, word);
-}
-
-int
-insert_skip_word(wordfilterctxptr ctx, const char* word) {
-	return do_insert_word(ctx, ctx->skip_word_root, word);
-}
-
-void
-clean_ctx(wordfilterctxptr ctx) {
-	if (!ctx) return;
-	if (ctx->word_root) {
-		free_node(ctx->word_root);
-	}
-	if (ctx->skip_word_root) {
-		free_node(ctx->skip_word_root);
-	}
-}
-
-void free_ctx(wordfilterctxptr ctx) {
-	clean_ctx(ctx);
-	if (ctx->word_root) {
-		word_filter_free(ctx->word_root, sizeof(*ctx->word_root));
-	}
-	if (ctx->skip_word_root) {
-		word_filter_free(ctx->skip_word_root, sizeof(*ctx->skip_word_root));
-	}
-	word_filter_free(ctx, sizeof(*ctx));
-}
-
-int
-search_word(wordfilterctxptr ctx, const char* word, char *word_key) {
-	return do_search_word(ctx, ctx->word_root, ctx->skip_word_root, word, word_key);
-}
-
-int
-search_word_ex(wordfilterctxptr ctx, const char* word, strnodeptr* strlist) {
-	const char* wordptr = word;
-	int find = 0;
-	strnodeptr strnode = NULL;
-	while (*wordptr) {
-		char string[MAX_WORD_LENGTH + 1] = {0};
-		int ret = search_word(ctx, wordptr, string);
-		if (ret) {
-			find = 1; 
-			wordptr += ret;
-			if (strlist && !search_strnode(strnode, string))
-				strnode = insert_str(strnode, string);
-		}
-		else {
-			wordptr++;
-		}
-	}
-	if (strlist) {
-		*strlist = strnode;
-	}
-	return find;
-}
-
-int
-filter_word(wordfilterctxptr ctx, const char* word, strnodeptr *strlist, char* outstr) {
-	if (!ctx || !word) return 0;
-	const char* wordptr = word;
-	char mask_word = ctx->mask_word;
-	int find = 0, strpos = 0;
-
-	strnodeptr strnode = NULL;
-	while (*wordptr) {
-		char string[MAX_WORD_LENGTH + 1] = {0};
-		int ret = search_word(ctx, wordptr, string);
-		if (ret) {
-			find = 1;
-			int stringindex = 0, i = 0;
-			while (i < ret) {
-				char c = *(wordptr + i);
-				if (string[stringindex] != c) {
-					outstr[strpos++] = c;
-					i++;
-					continue;
-				}
-				int j = 0;
-				while (c & (0x80 >> j) && j < 4) j++; //utf8 code
-				j = j ? j : 1;
-				i += j;
-				stringindex += j;
-				outstr[strpos++] = mask_word;
-			}
-			wordptr += ret;
-
-			if (strlist && !search_strnode(strnode, string))
-				strnode = insert_str(strnode, string);
-		}
-		else {
-			outstr[strpos++] = *wordptr;
-			wordptr++;
-		}
-	}
-
-	if (strlist) {
-		*strlist = strnode;
-	}
-
-	return find;
-}
-
-//忽略大小写需要在insert_word之前调用
-void
-set_ignore_case(wordfilterctxptr ctx, int is_ignore) {
-	ctx->ignorecase = is_ignore;
-}
-
-void
-set_mask_word(wordfilterctxptr ctx, char mask_word) {
-	ctx->mask_word = mask_word;
-}
-
-
-
+static wordfilterctxptr g_ctx_instance[MAX_FILTER_NUM] = {NULL};
+static struct rwlock g_rwlock[MAX_FILTER_NUM];
 
 
 int
@@ -470,13 +64,13 @@ lnewctx(lua_State *L) {
 						filter_id);
 	}
 
-	ctx = create_word_filter_ctx();
+	ctx = wf_create_ctx();
 	if (!ctx) {
 		UNLOCK(&g_ctx_lock);
 		luaL_error(L, "[wordfilter.newctx]: alloc context error");
 	}
-
-	set_ignore_case(ctx, ignorecase);
+	rwlock_init(&g_rwlock[filter_id-1]);
+	wf_set_ignore_case(ctx, ignorecase);
 	g_ctx_instance[filter_id-1] = ctx;
 	UNLOCK(&g_ctx_lock);
 	lua_pushboolean(L, 1);
@@ -494,7 +88,9 @@ lcleanctx(lua_State *L) {
 			luaL_error(L, "[wordfilter.cleanctx]: filter no created,filter id:[%d]",
 							filter_id);
 		}
-		clean_ctx(ctx);
+		rwlock_wlock(&g_rwlock[filter_id-1]);
+		wf_clean_ctx(ctx);
+		rwlock_wunlock(&g_rwlock[filter_id-1]);
 		UNLOCK(&g_ctx_lock);
 	} else {
 		luaL_error(L, "[wordfilter.cleanctx]: filter id overstep the boundary:[%d]",
@@ -514,7 +110,9 @@ lfreectx(lua_State *L) {
 			luaL_error(L, "[wordfilter.freectx]: filter no created,filter id:[%d]",
 							filter_id);
 		}
-		free_ctx(ctx);
+		rwlock_wlock(&g_rwlock[filter_id-1]);
+		wf_free_ctx(ctx);
+		rwlock_wunlock(&g_rwlock[filter_id-1]);
 		g_ctx_instance[filter_id-1] = NULL;
 		UNLOCK(&g_ctx_lock);
 	} else {
@@ -539,7 +137,7 @@ lsetignorecase(lua_State *L) {
 		luaL_error(L, "[wordfilter.setignorecase]: filter no created,filter id:[%d]",
 						filter_id);
 	}
-	ctx->ignorecase = ignorecase;
+	wf_set_ignore_case(ctx, ignorecase);
 	UNLOCK(&g_ctx_lock);
 	return 0;
 }
@@ -564,8 +162,7 @@ lsetmaskword(lua_State *L) {
 		luaL_error(L, "[wordfilter.setmaskword]: filter no created,filter id:[%d]",
 						filter_id);
 	}
-	ctx->mask_word = maskword[0];
-
+	wf_set_mask_word(ctx, maskword[0]);
 	UNLOCK(&g_ctx_lock);
 	return 0;
 }
@@ -589,21 +186,22 @@ lupdateskipword(lua_State *L) {
 		luaL_error(L, "[wordfilter.updateskipword]: filter no created,filter id:[%d]",
 						filter_id);
 	}
+	rwlock_wlock(&g_rwlock[filter_id-1]);
+	UNLOCK(&g_ctx_lock);
 
 	int success = 1;
 	lua_pushnil(L);
 	while (lua_next(L, -2)) {
 		const char* word = lua_tostring(L, -1);
-		if (!insert_skip_word(ctx, word)) {
+		if (!wf_insert_skip_word(ctx, word)) {
 			success = 0;
-			UNLOCK(&g_ctx_lock);
+			rwlock_wunlock(&g_rwlock[filter_id-1]);
 			luaL_error(L, "[wordfilter.updateskipword]: insert word error[%s]",
 							word);
 		}
-
 		lua_pop(L, 1);
 	}
-	UNLOCK(&g_ctx_lock);
+	rwlock_wunlock(&g_rwlock[filter_id-1]);
 
 	lua_pushboolean(L, success);
 	return 0;
@@ -630,25 +228,28 @@ lupdateword(lua_State *L) {
 						filter_id);
 	}
 
+	rwlock_wlock(&g_rwlock[filter_id-1]);
+	UNLOCK(&g_ctx_lock);
+
 	int success = 1;
 	lua_pushnil(L);
 	while (lua_next(L, -2)) {
 		if (lua_type(L, -1) != LUA_TSTRING) {
-			UNLOCK(&g_ctx_lock);
+			rwlock_wunlock(&g_rwlock[filter_id-1]);
 			luaL_error(L, "[wordfilter.updateword]: string expect, got type[%s]",
 							lua_typename(L, lua_type(L, -1)));
 		}
 		const char* word = lua_tostring(L, -1);
-		if (!insert_word(ctx, word)) {
+		if (!wf_insert_word(ctx, word)) {
 			success = 0;
-			UNLOCK(&g_ctx_lock);
+			rwlock_wunlock(&g_rwlock[filter_id-1]);
 			luaL_error(L, "[wordfilter.updateword]: insert word error[%s]",
 							word);
 		}
 		lua_pop(L, 1);
 	}
+	rwlock_wunlock(&g_rwlock[filter_id-1]);
 
-	UNLOCK(&g_ctx_lock);
 	lua_pushboolean(L, success);
 	return 1;
 }
@@ -664,6 +265,13 @@ lfilter(lua_State *L) {
 		luaL_error(L, "[wordfilter.filter]: string expect, got type:[%s]",
 						lua_typename(L, lua_type(L, 2)));
 	}
+	
+	size_t str_len;
+	const char* word = lua_tolstring(L, 2, &str_len);
+	if (word == NULL) {
+		lua_pushboolean(L, 0);
+		return 1;
+	}
 
 	LOCK(&g_ctx_lock);
 	wordfilterctxptr ctx = g_ctx_instance[filter_id-1];
@@ -673,20 +281,15 @@ lfilter(lua_State *L) {
 						filter_id);
 	}
 
-	size_t str_len;
-	const char* word = lua_tolstring(L, 2, &str_len);
-	if (word == NULL) {
-		UNLOCK(&g_ctx_lock);
-		lua_pushboolean(L, 0);
-		return 1;
-	}
+	rwlock_rlock(&g_rwlock[filter_id-1]);
+	UNLOCK(&g_ctx_lock);
 
 	char wordstartptr[str_len+1];
 	strnodeptr strlist = NULL;
-
 	memset(wordstartptr, 0, (str_len+1)*sizeof(char));
-	int isfilter = filter_word(ctx, word, &strlist, wordstartptr);
-	UNLOCK(&g_ctx_lock);
+	int isfilter = wf_filter_word(ctx, word, &strlist, wordstartptr);
+
+	rwlock_runlock(&g_rwlock[filter_id-1]);
 
 	lua_pushboolean(L, isfilter);
 	lua_pushstring(L, wordstartptr);
@@ -698,7 +301,7 @@ lfilter(lua_State *L) {
 		lua_rawseti(L, -2, i++);
 		p = p->next;
 	}
-	if (strlist) free_str_list(strlist);
+	if (strlist) wf_free_str_list(strlist);
 	return 3;
 }
 
@@ -714,6 +317,12 @@ lcheck(lua_State *L) {
 						lua_typename(L, lua_type(L, 2)));
 	}
 
+	const char* word = lua_tostring(L, 2);
+	if (word == NULL) {
+		lua_pushboolean(L, 0);
+		return 1;
+	}
+
 	LOCK(&g_ctx_lock);
 	wordfilterctxptr ctx = g_ctx_instance[filter_id-1];
 	if (!ctx) {
@@ -721,17 +330,12 @@ lcheck(lua_State *L) {
 		luaL_error(L, "[wordfilter.check]: filter no created,filter id:[%d]",
 						filter_id);
 	}
-
-	const char* word = lua_tostring(L, 2);
-	if (word == NULL) {
-		UNLOCK(&g_ctx_lock);
-		lua_pushboolean(L, 0);
-		return 1;
-	}
+	rwlock_rlock(&g_rwlock[filter_id-1]);
+	UNLOCK(&g_ctx_lock);
 
 	strnodeptr strlist = NULL;
-	int find = search_word_ex(ctx, word, &strlist);
-	UNLOCK(&g_ctx_lock);
+	int find = wf_search_word_ex(ctx, word, &strlist);
+	rwlock_runlock(&g_rwlock[filter_id-1]);
 
 	lua_pushboolean(L, find);
 	lua_newtable(L);
@@ -742,7 +346,7 @@ lcheck(lua_State *L) {
 		lua_rawseti(L, -2, i++);
 		p = p->next;
 	}
-	if (strlist) free_str_list(strlist);
+	if (strlist) wf_free_str_list(strlist);
 	return 2;
 }
 
@@ -762,7 +366,7 @@ lempty(lua_State *L) {
 		return 1;
 	}
 
-	int empty = (ctx->word_root->nchildren == 0);
+	int empty = wf_word_isempty(ctx);
 	UNLOCK(&g_ctx_lock);
 
 	lua_pushboolean(L, empty);
@@ -771,7 +375,38 @@ lempty(lua_State *L) {
 
 int
 lmemory(lua_State *L) {
-	lua_pushinteger(L, g_memsize);
+	lua_pushinteger(L, wf_get_memsize());
+	return 1;
+}
+
+int
+lcapacity(lua_State *L) {
+	int filter_id = lua_tointeger(L, 1);
+	if (filter_id < 1 || filter_id > MAX_FILTER_NUM) {
+		lua_pushboolean(L, 0);
+		return 1;
+	}
+
+	LOCK(&g_ctx_lock);
+	wordfilterctxptr ctx = g_ctx_instance[filter_id-1];
+	if (!ctx) {
+		UNLOCK(&g_ctx_lock);
+		lua_pushboolean(L, 0);
+		return 1;
+	}
+	
+	UNLOCK(&g_ctx_lock);
+
+	lua_newtable(L);
+	int i;
+	for (i=1; i<=8; i++) {
+		lua_newtable(L);
+		lua_pushinteger(L, ctx->pool[i-1].pool_tail);
+		lua_rawseti(L, -2, 1);
+		lua_pushinteger(L, ctx->pool[i-1].pool_size);
+		lua_rawseti(L, -2, 2);
+		lua_rawseti(L, -2, i);
+	}
 	return 1;
 }
 
@@ -790,6 +425,7 @@ luaopen_wordfilter(lua_State *L) {
 	  	{"check",          lcheck},
 	  	{"empty",          lempty},
 	  	{"memory",         lmemory},
+		{"capacity",       lcapacity},
 	  	{NULL, NULL}
 	};
 	lua_createtable(L, 0, (sizeof(l)) / sizeof(luaL_Reg) - 1);

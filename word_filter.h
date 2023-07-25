@@ -53,6 +53,8 @@ wordfilterctxptr wf_create_ctx();
 void wf_clean_ctx(wordfilterctxptr ctx);
 void wf_free_ctx(wordfilterctxptr ctx);
 
+int wf_word_isempty(wordfilterctxptr ctx);
+int wf_skipword_isempty(wordfilterctxptr ctx);
 int wf_insert_word(wordfilterctxptr ctx, const char* word);
 int wf_insert_skip_word(wordfilterctxptr ctx, const char* word);
 int wf_search_word(wordfilterctxptr ctx, const char* word, 

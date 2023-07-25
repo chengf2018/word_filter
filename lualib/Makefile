@@ -1,6 +1,7 @@
+WORD_FILTER_INC=../
 LUA_INC=../../lua-5.4.4/src
 LUA_CLIB=../../lua-5.4.4/src/liblua.a
-CFLAGS= -g -Wall -fPIC -I$(LUA_INC) -std=gnu99
+CFLAGS= -g -Wall -fPIC -I$(LUA_INC) -I$(WORD_FILTER_INC) -std=gnu99
 SHARED= --shared
 
 all : wordfilter.so

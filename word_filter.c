@@ -25,7 +25,6 @@
 
 #define MAX_TRIE_SIZE 0xFF
 #define MAX_WORD_LENGTH 0xFF //word length limit
-#define MAX_FILTER_NUM 10
 #define MAX_INDEX 0xFFFFF
 
 #define twoto(x) (1<<(x))
@@ -432,6 +431,20 @@ do_search_word(wordfilterctxptr ctx, trieptr word_root, trieptr skip_word_root, 
 		wordptr++;
 	}
 	return find ? (find + skip_num) : 0;
+}
+
+int
+wf_word_isempty(wordfilterctxptr ctx) {
+	if (!ctx) return 1;
+	trieptr children = trie_get_children(ctx->pool, &ctx->word_root);
+	return children == NULL || trie_get_data(children) == 0;
+}
+
+int
+wf_skipword_isempty(wordfilterctxptr ctx) {
+	if (!ctx) return 1;
+	trieptr children = trie_get_children(ctx->pool, &ctx->skip_word_root);
+	return children == NULL || trie_get_data(children) == 0;
 }
 
 int
