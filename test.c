@@ -29,7 +29,8 @@ char *usecase[] = {
 	"............",
 	". . .***test",
 	"xx   .XXX.com",
-	".屏蔽词"
+	".屏蔽词",
+	"屏蔽xx"
 };
 
 char *badword[] = {
@@ -92,10 +93,14 @@ int main(int argc, char **argv) {
 		wf_free_str_list(strlist);
 	}
 
+	char string[255 + 1] = {0};
+	wf_search_word(ctx, "...屏...蔽...", string);
+	printf("test:%s", string);
+
 	wf_clean_ctx(ctx);
 	wf_free_ctx(ctx);
 
 	//memory leak check
-	printf("memroy alloc size:%lu\n", wf_get_memsize());
+	printf("memroy alloc size:%llu\n", wf_get_memsize());
 	return 0;
 }

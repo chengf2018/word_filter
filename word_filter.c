@@ -35,6 +35,14 @@ ceil_log2(uint32_t x) {
 	return i;
 }
 
+inline static int
+get_utf8_size(char c) {
+	int n = 0;
+	while (c & (0x80>>n) && n < 4) n++; //utf8 code
+	if(n==0) n++;
+	return n;
+}
+
 #define trie_get_data(n)               ( (n)->data & 0xFF )
 #define trie_get_isword(n)             ( ((n)->data & 0x100) >> 8 )
 #define trie_get_capacity_pool(n)      ( (((n)->data & 0xE00) >> 9))
@@ -408,28 +416,22 @@ do_search_word(wordfilterctxptr ctx, trieptr word_root, trieptr skip_word_root, 
 		index = binary_search(ctx, node, c, &exist);
 		if (!exist) {
 			//word not existed, try skip word
-			if (word_key_index > 0) {
-				int skip = skip_word(ctx, skip_word_root, &wordptr, ignorecase);
-				if (skip) {
-					skip_num += skip;
-					continue;
-				}
-			}
-			
-			break;
+			int skip = skip_word(ctx, skip_word_root, &wordptr, ignorecase);
+			if (!skip) break;
+			skip_num += skip;
+			continue;
 		}
-		if (word_key) {
-			word_key[word_key_index] = *wordptr;
-		}
+		if (word_key) word_key[word_key_index] = *wordptr;
+
 		word_key_index++;
 		trieptr children = trie_get_children(ctx->pool, node);
 		node = &children[index];
 
-		if (trie_get_isword(node)) {
-			find = word_key_index;
-		}
+		if (trie_get_isword(node)) find = word_key_index;
+
 		wordptr++;
 	}
+	if(word_key) word_key[find] = 0;
 	return find ? (find + skip_num) : 0;
 }
 
@@ -497,26 +499,44 @@ wf_search_word_ex(wordfilterctxptr ctx, const char* word, strnodeptr* strlist) {
 	int find = 0;
 	strnodeptr strnode = NULL;
 	while (*wordptr) {
-		char string[MAX_WORD_LENGTH + 1] = {0};
-		int ret = wf_search_word(ctx, wordptr, string);
+		char word_key[MAX_WORD_LENGTH + 1] = {0};
+		int ret = wf_search_word(ctx, wordptr, word_key);
 		if (ret) {
 			find = 1; 
 			wordptr += ret;
-			if (strlist && !search_strnode(strnode, string))
-				strnode = insert_str(strnode, string);
+			if (strlist && !search_strnode(strnode, word_key))
+				strnode = insert_str(strnode, word_key);
 		}
 		else {
 			wordptr++;
 		}
 	}
-	if (strlist) {
+	if (strlist)
 		*strlist = strnode;
-	}
+
 	return find;
 }
 
+static int
+_fill_outstr(const char* wordptr, char* outstr, const char* word_key, int len, char mask_word) {
+	int index = 0, i = 0, strpos = 0;
+	while (i < len) {
+		char c = *(wordptr + i);
+		if (word_key[index] == c) {//is skip word?
+			outstr[strpos++] = mask_word;
+			int n = get_utf8_size(c);
+			index += n;  i += n;
+		} else {
+			outstr[strpos++] = c;
+			i++;
+		}
+		
+	}
+	return strpos;
+}
+
 int
-wf_filter_word(wordfilterctxptr ctx, const char* word, strnodeptr* strlist, char *outstr) {
+wf_filter_word(wordfilterctxptr ctx, const char* word, strnodeptr* strlist, char* outstr) {
 	if (!ctx || !word || !outstr) return 0;
 	const char* wordptr = word;
 	char mask_word = ctx->mask_word;
@@ -524,29 +544,15 @@ wf_filter_word(wordfilterctxptr ctx, const char* word, strnodeptr* strlist, char
 
 	strnodeptr strnode = NULL;
 	while (*wordptr) {
-		char string[MAX_WORD_LENGTH + 1] = {0};
-		int ret = wf_search_word(ctx, wordptr, string);
+		char word_key[MAX_WORD_LENGTH + 1] = {0};
+		int ret = wf_search_word(ctx, wordptr, word_key);
 		if (ret) {
 			find = 1;
-			int stringindex = 0, i = 0;
-			while (i < ret) {
-				char c = *(wordptr + i);
-				if (string[stringindex] != c) {
-					outstr[strpos++] = c;
-					i++;
-					continue;
-				}
-				int j = 0;
-				while (c & (0x80>>j) && j < 4) j++; //utf8 code
-				j = j ? j : 1;
-				i += j;
-				stringindex += j;
-				outstr[strpos++] = mask_word;
-			}
+			strpos += _fill_outstr(wordptr, outstr + strpos, word_key, ret, mask_word);
 			wordptr += ret;
 
-			if (strlist && !search_strnode(strnode, string))
-				strnode = insert_str(strnode, string);
+			if (strlist && !search_strnode(strnode, word_key))
+				strnode = insert_str(strnode, word_key);
 		}
 		else {
 			outstr[strpos++] = *wordptr;

@@ -1,9 +1,9 @@
-CFLAGS = -g -O2 -fPIC -Wall -fPIC -std=gnu99
+CFLAGS = -g -O2 -Wall -std=gnu99
 
 all : word_filter.a test
 
 word_filter.o : word_filter.c
-	gcc $(CFLAGS) -c $^ -o $@
+	gcc $(CFLAGS) -fPIC -c $^ -o $@
 
 word_filter.a : word_filter.o
 	ar cr $@ $^
