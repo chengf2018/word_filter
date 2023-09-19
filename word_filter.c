@@ -39,8 +39,7 @@ inline static int
 get_utf8_size(char c) {
 	int n = 0;
 	while (c & (0x80>>n) && n < 4) n++; //utf8 code
-	if(n==0) n++;
-	return n;
+	return n ? n : 1;
 }
 
 #define trie_get_data(n)               ( (n)->data & 0xFF )
@@ -519,18 +518,17 @@ wf_search_word_ex(wordfilterctxptr ctx, const char* word, strnodeptr* strlist) {
 
 static int
 _fill_outstr(const char* wordptr, char* outstr, const char* word_key, int len, char mask_word) {
-	int index = 0, i = 0, strpos = 0;
+	int index = 0, i = 0, strpos = 0, n;
 	while (i < len) {
 		char c = *(wordptr + i);
 		if (word_key[index] == c) {//is skip word?
 			outstr[strpos++] = mask_word;
-			int n = get_utf8_size(c);
+			n = get_utf8_size(c);
 			index += n;  i += n;
 		} else {
 			outstr[strpos++] = c;
 			i++;
 		}
-		
 	}
 	return strpos;
 }
@@ -567,7 +565,7 @@ wf_filter_word(wordfilterctxptr ctx, const char* word, strnodeptr* strlist, char
 	return find;
 }
 
-//the function must used at before insert word
+//this function must be used before the 'wf_insert_word'
 void
 wf_set_ignore_case(wordfilterctxptr ctx, int is_ignore) {
 	ctx->ignorecase = is_ignore;
