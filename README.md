@@ -7,6 +7,7 @@ Liunx and Windows:
     make all
 
 # Lua Binding
+
 cd lualib
 
 Linux:
