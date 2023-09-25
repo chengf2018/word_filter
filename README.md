@@ -4,7 +4,11 @@ This is a simple word filter,you can skip some word then filter the bad word.
 # Build
 Linux:
 
-    make all
+    make linux
+
+Windows:
+
+    make windows
 
 # Use Case
     wordfilterctxptr ctx = word_filter_create_ctx();
