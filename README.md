@@ -2,6 +2,13 @@
 This is a simple word filter,you can skip some word then filter the bad word.
 
 # Build
+Liunx and Windows:
+
+    make all
+
+# Lua Binding
+cd lualib
+
 Linux:
 
     make linux
